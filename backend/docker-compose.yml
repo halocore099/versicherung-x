@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: versicherung-x-backend
+    ports:
+      - "8000:8000"  # Expose to host for Cloudflare Tunnel
+    environment:
+      # Database credentials
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      # Firebase
+      - FIREBASE_SERVICE_ACCOUNT_JSON=${FIREBASE_SERVICE_ACCOUNT_JSON}
+      # Repairline API
+      - REPAIRLINE_API_USERNAME=${REPAIRLINE_API_USERNAME}
+      - REPAIRLINE_API_PASSWORD=${REPAIRLINE_API_PASSWORD}
+      # Databutton
+      - DATABUTTON_SERVICE_TYPE=${DATABUTTON_SERVICE_TYPE:-production}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
