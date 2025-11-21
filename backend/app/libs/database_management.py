@@ -1,15 +1,14 @@
-import databutton as db
 import mysql.connector
 import os
 
 def get_mysql_connection():
     """Establishes and returns a MySQL database connection."""
     try:
-        # Try databutton secrets first, fall back to environment variables
-        host = db.secrets.get("MYSQL_HOST") or os.getenv("MYSQL_HOST")
-        user = db.secrets.get("MYSQL_USER") or os.getenv("MYSQL_USER")
-        password = db.secrets.get("MYSQL_PASSWORD") or os.getenv("MYSQL_PASSWORD")
-        database = db.secrets.get("MYSQL_DATABASE") or os.getenv("MYSQL_DATABASE")
+        # Get credentials from environment variables
+        host = os.getenv("MYSQL_HOST")
+        user = os.getenv("MYSQL_USER")
+        password = os.getenv("MYSQL_PASSWORD")
+        database = os.getenv("MYSQL_DATABASE")
         
         cnx = mysql.connector.connect(
             host=host,

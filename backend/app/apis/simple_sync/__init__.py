@@ -3,7 +3,6 @@ import requests
 import json
 import os
 from app.libs.database_management import get_mysql_connection
-import databutton as db
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -12,9 +11,9 @@ from typing import Optional
 
 router = APIRouter()
 
-# Try databutton secrets first, fall back to environment variables
-REPAIRLINE_API_USERNAME = db.secrets.get("REPAIRLINE_API_USERNAME") or os.getenv("REPAIRLINE_API_USERNAME")
-REPAIRLINE_API_PASSWORD = db.secrets.get("REPAIRLINE_API_PASSWORD") or os.getenv("REPAIRLINE_API_PASSWORD")
+# Get credentials from environment variables
+REPAIRLINE_API_USERNAME = os.getenv("REPAIRLINE_API_USERNAME")
+REPAIRLINE_API_PASSWORD = os.getenv("REPAIRLINE_API_PASSWORD")
 REPAIRLINE_API_BASE_URL = "http://api.system.repairline.de/v2/"
 
 # Configuration
@@ -33,13 +32,13 @@ def _fetch_case_with_retry(case_id: int, max_retries: int = MAX_RETRIES) -> Opti
     
     for attempt in range(max_retries):
         try:
-    detail_response = requests.get(
-        f"{REPAIRLINE_API_BASE_URL}cases/{case_id}",
-        auth=(REPAIRLINE_API_USERNAME, REPAIRLINE_API_PASSWORD),
-        headers=headers,
+            detail_response = requests.get(
+                f"{REPAIRLINE_API_BASE_URL}cases/{case_id}",
+                auth=(REPAIRLINE_API_USERNAME, REPAIRLINE_API_PASSWORD),
+                headers=headers,
                 timeout=REQUEST_TIMEOUT,
-    )
-    detail_response.raise_for_status()
+            )
+            detail_response.raise_for_status()
             return detail_response.json()
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
@@ -76,53 +75,53 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
         if not case_data:
             return "error_fetch_failed"
         
-    print(f"[{case_id}] Fetched raw API data.")
+        print(f"[{case_id}] Fetched raw API data.")
 
-    # 2. Check if it's an insurance case
-    insurance_data = case_data.get('Insurance') # Can be None
-    if not (insurance_data and insurance_data.get('InsuranceIsActivated')):
-        print(f"[{case_id}] Is not an insurance case or Insurance object is null/inactive. Skipping.")
-        return "skipped_not_insurance"
-    
-    print(f"[{case_id}] Is an insurance case. Proceeding.")
+        # 2. Check if it's an insurance case
+        insurance_data = case_data.get('Insurance') # Can be None
+        if not (insurance_data and insurance_data.get('InsuranceIsActivated')):
+            print(f"[{case_id}] Is not an insurance case or Insurance object is null/inactive. Skipping.")
+            return "skipped_not_insurance"
+        
+        print(f"[{case_id}] Is an insurance case. Proceeding.")
 
-    # 3. Compare with existing data to see if an update is needed
-    cursor = cnx.cursor(dictionary=True)
-    cursor.execute("SELECT `rawApiDetail` FROM `repair_cases` WHERE `caseId` = %s", (case_id,))
-    existing_record = cursor.fetchone()
-    cursor.close()
+        # 3. Compare with existing data to see if an update is needed
+        cursor = cnx.cursor(dictionary=True)
+        cursor.execute("SELECT `rawApiDetail` FROM `repair_cases` WHERE `caseId` = %s", (case_id,))
+        existing_record = cursor.fetchone()
+        cursor.close()
 
-    new_raw_detail_json = json.dumps(case_data, sort_keys=True)
+        new_raw_detail_json = json.dumps(case_data, sort_keys=True)
 
-    if existing_record:
-        try:
-            existing_raw_detail = existing_record.get('rawApiDetail', '{}')
-            if isinstance(existing_raw_detail, bytes):
-                existing_raw_detail = existing_raw_detail.decode('utf-8')
-            
-            normalized_existing = json.dumps(json.loads(existing_raw_detail), sort_keys=True)
-            
-            if normalized_existing == new_raw_detail_json:
-                print(f"[{case_id}] Data is identical to DB record. Skipping update.")
-                return "skipped_no_change"
-        except (json.JSONDecodeError, TypeError) as json_err:
-            print(f"[{case_id}] Warning: Could not compare JSON. Proceeding with update. Error: {json_err}")
-    
-    # 4. Robust Data Mapping
-    print(f"[{case_id}] Data has changed or is new. Mapping fields for upsert.")
-    
-    # Safer access to bookings
+        if existing_record:
+            try:
+                existing_raw_detail = existing_record.get('rawApiDetail', '{}')
+                if isinstance(existing_raw_detail, bytes):
+                    existing_raw_detail = existing_raw_detail.decode('utf-8')
+                
+                normalized_existing = json.dumps(json.loads(existing_raw_detail), sort_keys=True)
+                
+                if normalized_existing == new_raw_detail_json:
+                    print(f"[{case_id}] Data is identical to DB record. Skipping update.")
+                    return "skipped_no_change"
+            except (json.JSONDecodeError, TypeError) as json_err:
+                print(f"[{case_id}] Warning: Could not compare JSON. Proceeding with update. Error: {json_err}")
+        
+        # 4. Robust Data Mapping
+        print(f"[{case_id}] Data has changed or is new. Mapping fields for upsert.")
+        
+        # Safer access to bookings
         bookings = case_data.get('Bookings') or []
         latest_status = bookings[-1].get('Status') if bookings and len(bookings) > 0 else None
         if not latest_status:
             latest_status = case_data.get('Status')  # Fallback to top-level status
 
-    # Safer access to nested objects, providing default empty dicts
-    customer_data = case_data.get('Customer') or {}
-    product_data = case_data.get('Product') or {}
+        # Safer access to nested objects, providing default empty dicts
+        customer_data = case_data.get('Customer') or {}
+        product_data = case_data.get('Product') or {}
         insurance_data = case_data.get('Insurance') or {}
-    symptoms_data = case_data.get('Symptoms') or {}
-    store_data = case_data.get('Store') or {}
+        symptoms_data = case_data.get('Symptoms') or {}
+        store_data = case_data.get('Store') or {}
         service_data = case_data.get('Service') or {}
         
         # Helper function to convert empty strings to None
@@ -158,8 +157,8 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
         # Build complete data dictionary - include ALL fields that exist in the database, even if None
         # This ensures NULL fields in DB get updated properly
         # Based on the actual database schema from view_cases/__init__.py
-    db_data = {
-        'caseId': case_data.get('CaseId'),
+        db_data = {
+            'caseId': case_data.get('CaseId'),
             'caseNumber': clean_value(case_data.get('CaseNumber')),
             'customerName': customer_name,
             'customerEmail': clean_value(customer_data.get('Email')),
@@ -173,7 +172,7 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
             'serviceType': clean_value(service_data.get('Servicetype')),
             'currency': clean_value(case_data.get('Currency')),
             'insuranceContractNumber': clean_value(insurance_data.get('ContractNumber')),
-        'insuranceIsActive': 1,
+            'insuranceIsActive': 1,
             'insuranceName': clean_value(insurance_data.get('Name')),
             'insuranceDeductible': insurance_data.get('Retention') if insurance_data.get('Retention') is not None else None,
             'insuranceSettlementAmount': insurance_data.get('SettlementAmount') if insurance_data.get('SettlementAmount') is not None else None,
@@ -184,11 +183,11 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
             'customerPhoneMain': clean_value(customer_data.get('PhoneMain')),
             'customerZipCode': clean_value(customer_data.get('ZipCode')),
             'productSerialNumber': clean_value(product_data.get('SerialNumber')),
-        'totalRepairCost': total_repair_cost,
-        'rawApiDetail': new_raw_detail_json,
-        'lastApiUpdate': start_time_utc,
+            'totalRepairCost': total_repair_cost,
+            'rawApiDetail': new_raw_detail_json,
+            'lastApiUpdate': start_time_utc,
             'isPresentInLastApiSync': 1,
-    }
+        }
 
         # 5. Get existing columns from database to filter out non-existent columns
         # This allows the code to work even if some columns don't exist yet
@@ -215,15 +214,15 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
         placeholders = ", ".join(["%s"] * len(filtered_db_data))
         # Update ALL fields, including NULL values
         update_clause = ", ".join([f"`{key}` = VALUES(`{key}`)" for key in filtered_db_data.keys()])
-    sql = f"INSERT INTO repair_cases ({columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}"
-    
+        sql = f"INSERT INTO repair_cases ({columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}"
+        
         print(f"[{case_id}] Executing SQL upsert with {len(filtered_db_data)} fields.")
-    cursor = cnx.cursor()
+        cursor = cnx.cursor()
         cursor.execute(sql, list(filtered_db_data.values()))
-    cursor.close()
+        cursor.close()
         cnx.commit()
-    
-    return "upserted"
+        
+        return "upserted"
     except Exception as e:
         print(f"[{case_id}] Error in _process_single_case: {e}")
         if cnx:
@@ -297,17 +296,17 @@ def sync_insurance_cases_task():
                           f"({rate:.1f} cases/sec, ETA: {eta:.0f}s)")
 
             try:
-                    result = future.result()
+                result = future.result()
                 if result == "upserted":
                     upsert_count += 1
                 elif result == "skipped_no_change":
                     skipped_no_change_count += 1
                 elif result == "skipped_not_insurance":
                     skipped_not_insurance_count += 1
-                    elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
-                error_count += 1
+                elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
+                    error_count += 1
             except Exception as detail_err:
-                    print(f"Error processing case {case_id}: {detail_err}")
+                print(f"Error processing case {case_id}: {detail_err}")
                 error_count += 1
         elapsed_total = time.time() - start_time
         print(f"Sync finished in {elapsed_total:.1f}s. "

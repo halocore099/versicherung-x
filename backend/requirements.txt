@@ -1,19 +1,30 @@
-# Workspace version: 1.46.40
-ipykernel==6.29.5
-python-multipart==0.0.9
-uvicorn[standard]==0.34.2
-databutton==0.38.34
+# Core FastAPI dependencies
 fastapi==0.115.12
-openai
-beautifulsoup4
-requests
-firebase-admin
-mysql-connector-python
-databutton==0.38.34
-ipykernel==6.29.5
-fastapi==0.111.0
+uvicorn[standard]==0.34.2
 python-multipart==0.0.9
-uvicorn[standard]==0.29.0
+
+# Database
+mysql-connector-python
+
+# Firebase
+firebase-admin
+
+# HTTP requests
+requests
+
+# Data processing
 pandas
 openpyxl
+
+# Scheduling
 apscheduler
+
+# Web scraping (if needed)
+beautifulsoup4
+
+# Optional: Databutton (used as fallback for secrets, but env vars are primary)
+# Can be removed if you only use environment variables - code will work without it
+# databutton==0.38.34
+
+# Environment variables
+python-dotenv

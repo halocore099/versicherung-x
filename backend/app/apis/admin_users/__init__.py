@@ -2,18 +2,16 @@ import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-import databutton as db
 import os
+import json
 
 from app.auth import AuthorizedUser # To get the calling user's details
 
 router = APIRouter(tags=["Admin - User Management"]) # Removed prefix
 
-import json # Make sure json is imported
-
 # --- Firebase Admin SDK Initialization ---
-# Try databutton secrets first, fall back to environment variables
-service_account_json_str = db.secrets.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+# Get Firebase service account from environment variable
+service_account_json_str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
 
 if service_account_json_str:
     try:

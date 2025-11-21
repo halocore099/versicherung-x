@@ -64,13 +64,14 @@ def import_api_routers() -> APIRouter:
 
 
 def get_firebase_config() -> dict | None:
-    extensions = os.environ.get("DATABUTTON_EXTENSIONS", "[]")
-    extensions = json.loads(extensions)
-
-    for ext in extensions:
-        if ext["name"] == "firebase-auth":
-            return ext["config"]["firebaseConfig"]
-
+    """Get Firebase config from environment variable."""
+    firebase_config_json = os.environ.get("FIREBASE_CONFIG")
+    if firebase_config_json:
+        try:
+            return json.loads(firebase_config_json)
+        except json.JSONDecodeError:
+            print("Error: FIREBASE_CONFIG is not valid JSON")
+            return None
     return None
 
 
@@ -87,17 +88,22 @@ def create_app() -> FastAPI:
     firebase_config = get_firebase_config()
 
     if firebase_config is None:
-        print("No firebase config found")
+        print("No firebase config found - authentication will be disabled")
         app.state.auth_config = None
     else:
         print("Firebase config found")
-        auth_config = {
-            "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
-            "audience": firebase_config["projectId"],
-            "header": "authorization",
-        }
-
-        app.state.auth_config = AuthConfig(**auth_config)
+        # Extract projectId from Firebase config
+        project_id = firebase_config.get("projectId")
+        if not project_id:
+            print("Warning: Firebase config missing projectId")
+            app.state.auth_config = None
+        else:
+            auth_config = {
+                "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+                "audience": project_id,
+                "header": "authorization",
+            }
+            app.state.auth_config = AuthConfig(**auth_config)
 
     return app
 

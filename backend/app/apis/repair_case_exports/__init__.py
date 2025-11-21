@@ -1,4 +1,5 @@
 import io
+import os
 import pandas as pd
 import requests
 import asyncio # Added for asyncio.sleep
@@ -7,8 +8,6 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
-
-import databutton as db
 from app.auth import AuthorizedUser # Assuming endpoint might be protected
 
 router = APIRouter(tags=["Repair Case Exports"])
@@ -22,8 +21,9 @@ class ExportOldCasesRequest(BaseModel):
 # --- Helper Functions ---
 async def fetch_case_details_from_reparline(case_number: str) -> Dict[str, Any] | None:
     """Fetches case details for a single case number from Repairline API using Basic Auth."""
-    username = db.secrets.get("REPAIRLINE_API_USERNAME")
-    password = db.secrets.get("REPAIRLINE_API_PASSWORD")
+    # Get credentials from environment variables
+    username = os.getenv("REPAIRLINE_API_USERNAME")
+    password = os.getenv("REPAIRLINE_API_PASSWORD")
 
     if not username or not password:
         print("Error: Repairline API username or password not configured in secrets.")
