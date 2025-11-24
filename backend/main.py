@@ -82,10 +82,14 @@ def create_app() -> FastAPI:
     
     # Configure CORS
     # Get allowed origins from environment variable or use defaults
-    allowed_origins = os.getenv(
+    cors_origins_str = os.getenv(
         "CORS_ALLOWED_ORIGINS",
         "https://versicherung.justcom.de,http://localhost:5173,http://localhost:3000"
-    ).split(",")
+    )
+    # Split by comma and strip whitespace from each origin
+    allowed_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+    
+    print(f"CORS allowed origins: {allowed_origins}")
     
     app.add_middleware(
         CORSMiddleware,
@@ -93,6 +97,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
     
     app.include_router(import_api_routers())
