@@ -53,8 +53,51 @@ const configSchema = z.object({
 type FirebaseExtensionConfig = z.infer<typeof configSchema>;
 
 // This is set by vite.config.ts
-declare const __FIREBASE_CONFIG__: string;
+// Vite's define may pass it as a string or already parsed object
+declare const __FIREBASE_CONFIG__: string | object;
 
-export const config: FirebaseExtensionConfig = configSchema.parse(
-  JSON.parse(__FIREBASE_CONFIG__),
-);
+// Parse Firebase config with error handling
+// __FIREBASE_CONFIG__ is set by vite.config.ts and may be a string or already an object
+let parsedConfig: FirebaseExtensionConfig;
+try {
+	let configData: any;
+	
+	// Check if it's already an object (Vite's define may pass it as-is)
+	if (typeof __FIREBASE_CONFIG__ === "object" && __FIREBASE_CONFIG__ !== null) {
+		configData = __FIREBASE_CONFIG__;
+	} else if (typeof __FIREBASE_CONFIG__ === "string") {
+		// If it's a string, try to parse it
+		configData = JSON.parse(__FIREBASE_CONFIG__);
+	} else {
+		// Fallback to empty object
+		configData = {};
+	}
+	
+	parsedConfig = configSchema.parse(configData);
+} catch (error) {
+	console.error("Failed to parse Firebase config:", error);
+	console.error("Config value:", __FIREBASE_CONFIG__);
+	// Provide a minimal valid config to prevent app crash
+	parsedConfig = configSchema.parse({
+		firebaseConfig: {
+			apiKey: "",
+			authDomain: "",
+			projectId: "",
+			storageBucket: "",
+			messagingSenderId: "",
+			appId: "",
+		},
+		signInOptions: {
+			google: false,
+			github: false,
+			facebook: false,
+			twitter: false,
+			emailAndPassword: true,
+			magicLink: false,
+		},
+		siteName: "Versicherung X",
+		signInSuccessUrl: "/",
+	});
+}
+
+export const config: FirebaseExtensionConfig = parsedConfig;

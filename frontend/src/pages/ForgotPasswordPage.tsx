@@ -23,6 +23,10 @@ export default function ForgotPasswordPage() {
     setLoading(true);
     setMessage(null);
     try {
+      if (!firebaseAuth) {
+        setMessage({ type: "error", text: "Firebase ist nicht konfiguriert. Bitte kontaktieren Sie den Administrator." });
+        return;
+      }
       await sendPasswordResetEmail(firebaseAuth, email);
       setMessage({
         type: "success",

@@ -25,6 +25,9 @@ const validateConfig = () => {
  * TODO: Set providers based on config
  */
 const signInWithGoogle = async (): Promise<UserCredential | null> => {
+  if (!firebaseAuth) {
+    throw new Error("Firebase is not configured");
+  }
   const provider = new GoogleAuthProvider();
   provider.addScope("https://www.googleapis.com/auth/userinfo.profile");
 
@@ -35,6 +38,9 @@ const signInWithGoogle = async (): Promise<UserCredential | null> => {
  * Sign out the user.
  */
 const signOut = async (): Promise<void> => {
+  if (!firebaseAuth) {
+    return;
+  }
   return firebaseSignOut(firebaseAuth);
 };
 
@@ -42,7 +48,7 @@ const signOut = async (): Promise<void> => {
  * Returns the logged in user if logged in, otherwise null.
  */
 const getCurrentUser = (): User | null => {
-  return firebaseAuth.currentUser;
+  return firebaseAuth?.currentUser ?? null;
 };
 
 /**
@@ -82,6 +88,9 @@ const updateCurrentUserPassword = async (user: User, newPassword: string) => {
  * Sends a password reset email to the current user.
  */
 const sendPasswordResetEmail = async (email: string) => {
+  if (!firebaseAuth) {
+    throw new Error("Firebase is not configured");
+  }
   return firebaseSendPasswordResetEmail(firebaseAuth, email);
 };
 
@@ -94,7 +103,7 @@ const reauthenticateUser = async (user: User, credential: AuthCredential) => {
 };
 
 const getAuthToken = async (): Promise<string | null> => {
-  return firebaseAuth.currentUser?.getIdToken() ?? null;
+  return firebaseAuth?.currentUser?.getIdToken() ?? null;
 };
 
 const getAuthHeaderValue = async (): Promise<string> => {

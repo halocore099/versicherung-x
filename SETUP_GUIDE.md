@@ -1,27 +1,28 @@
-# Complete Setup Guide: 2-Server Deployment with Cloudflare Tunnel
+# Complete Setup Guide: ISPConfig Frontend + Separate Backend VM
 
-This guide walks you through deploying the Versicherung-X application to two remote servers:
-1. **Backend Server**: Runs the FastAPI backend in Docker with Cloudflare Tunnel
-2. **Frontend Server**: Serves static frontend files
+This guide walks you through deploying the Versicherung-X application:
+1. **Backend Server (Linux VM)**: Runs the FastAPI backend in Docker with Cloudflare Tunnel
+2. **Frontend (ISPConfig Server)**: Serves static frontend files via ISPConfig
 
 ---
 
 ## Prerequisites
 
-- Two Linux servers (Ubuntu/Debian recommended)
-- SSH access to both servers
-- Docker installed on backend server (or ability to install it)
+- Linux VM for backend (Ubuntu/Debian recommended)
+- ISPConfig server with access to configure sites
+- SSH access to backend VM
+- Docker installed on backend VM (or ability to install it)
 - Cloudflare account with a domain
 - MySQL database (can be on backend server or separate)
 
 ---
 
-## Part 1: Backend Server Setup
+## Part 1: Backend Server Setup (Linux VM)
 
 ### Step 1: Connect to Backend Server
 
 ```bash
-ssh user@backend-server-ip
+ssh user@backend-vm-ip
 ```
 
 ### Step 2: Install Docker (if not installed)
@@ -71,7 +72,7 @@ From your local machine, upload the backend files:
 ```bash
 # From your local machine
 cd /path/to/versicherung-x
-scp -r backend/* user@backend-server-ip:~/versicherung-x/backend/
+scp -r backend/* user@backend-vm-ip:~/versicherung-x/backend/
 ```
 
 **Required files:**
@@ -81,14 +82,14 @@ scp -r backend/* user@backend-server-ip:~/versicherung-x/backend/
 - `Dockerfile`
 - `docker-compose.yml`
 - `.dockerignore`
+- `.env` (with your credentials)
 - `app/` directory (entire folder)
 - `databutton_app/` directory (entire folder)
 
-### Step 5: Create Environment File
+### Step 5: Create/Update Environment File
 
 ```bash
 cd ~/versicherung-x/backend
-cp .env.example .env
 nano .env  # Or use vi/vim
 ```
 
@@ -104,15 +105,16 @@ MYSQL_DATABASE=your_database_name
 # Firebase Service Account (JSON string - keep it on one line)
 FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account","project_id":"...","private_key":"..."}
 
+# Firebase Client Config
+FIREBASE_CONFIG={"apiKey":"...","projectId":"..."}
+
 # Repairline API Credentials
 REPAIRLINE_API_USERNAME=your_repairline_username
 REPAIRLINE_API_PASSWORD=your_repairline_password
 
-# Databutton (optional)
+# Optional
 DATABUTTON_SERVICE_TYPE=production
 ```
-
-**Important**: For `FIREBASE_SERVICE_ACCOUNT_JSON`, you need to escape the JSON properly or put it all on one line.
 
 Save and exit (Ctrl+X, then Y, then Enter for nano).
 
@@ -200,14 +202,14 @@ mkdir -p ~/.cloudflared
 nano ~/.cloudflared/config.yml
 ```
 
-Add this configuration (replace `YOUR_TUNNEL_ID` with your actual tunnel ID):
+Add this configuration (replace `YOUR_TUNNEL_ID` and `YOUR_USERNAME` with your actual values):
 
 ```yaml
 tunnel: YOUR_TUNNEL_ID
 credentials-file: /home/YOUR_USERNAME/.cloudflared/YOUR_TUNNEL_ID.json
 
 ingress:
-  # Backend API
+  # Backend API - use subdomain (recommended)
   - hostname: api.your-domain.com
     service: http://localhost:8000
   
@@ -224,7 +226,7 @@ credentials-file: /home/YOUR_USERNAME/.cloudflared/YOUR_TUNNEL_ID.json
 ingress:
   # Backend API with path
   - hostname: your-domain.com
-    path: /routes/*
+    path: /api/*
     service: http://localhost:8000
   
   # Catch-all
@@ -244,17 +246,11 @@ Save and exit.
    - **Subdomain**: `api` (or leave blank for root domain)
    - **Domain**: `your-domain.com`
    - **Service**: `http://localhost:8000`
-   - **Path** (if using path-based routing): `/routes/*`
+   - **Path** (if using path-based routing): `/api/*`
 
 ### Step 13: Run Cloudflare Tunnel
 
-**Option A: Run in foreground (for testing)**
-
-```bash
-cloudflared tunnel --config ~/.cloudflared/config.yml run versicherung-x-backend
-```
-
-**Option B: Run as systemd service (recommended)**
+**Option A: Run as systemd service (recommended)**
 
 Create service file:
 
@@ -290,7 +286,7 @@ sudo systemctl start cloudflared-tunnel
 sudo systemctl status cloudflared-tunnel
 ```
 
-**Option C: Run with nohup (if no systemd access)**
+**Option B: Run with nohup (if no systemd access)**
 
 ```bash
 nohup cloudflared tunnel --config ~/.cloudflared/config.yml run versicherung-x-backend > ~/cloudflared.log 2>&1 &
@@ -299,44 +295,22 @@ nohup cloudflared tunnel --config ~/.cloudflared/config.yml run versicherung-x-b
 ### Step 14: Verify Backend is Accessible
 
 ```bash
-# Test via Cloudflare Tunnel
+# Test via Cloudflare Tunnel (using subdomain)
 curl https://api.your-domain.com/routes/
 
 # Or if using path-based routing
-curl https://your-domain.com/routes/
+curl https://your-domain.com/api/routes/
 ```
+
+**Note the Cloudflare Tunnel URL** - you'll need this for the frontend configuration:
+- Subdomain: `https://api.your-domain.com`
+- Path-based: `https://your-domain.com/api`
 
 ---
 
-## Part 2: Frontend Server Setup
+## Part 2: Frontend Setup (ISPConfig Server)
 
-### Step 1: Connect to Frontend Server
-
-```bash
-ssh user@frontend-server-ip
-```
-
-### Step 2: Install Web Server (Nginx or Apache)
-
-**Option A: Nginx (Recommended)**
-
-```bash
-sudo apt-get update
-sudo apt-get install -y nginx
-sudo systemctl enable nginx
-sudo systemctl start nginx
-```
-
-**Option B: Apache**
-
-```bash
-sudo apt-get update
-sudo apt-get install -y apache2
-sudo systemctl enable apache2
-sudo systemctl start apache2
-```
-
-### Step 3: Build Frontend Locally
+### Step 1: Build Frontend Locally
 
 On your **local machine**:
 
@@ -346,154 +320,178 @@ cd /path/to/versicherung-x/frontend
 # Install dependencies
 yarn install
 
-# Build for production (with relative API paths for Cloudflare Tunnel)
-VITE_API_URL="" \
+# Build for production
+# IMPORTANT: Use your Cloudflare Tunnel URL for the API
+# Replace api.your-domain.com with your actual backend URL
+VITE_API_URL="https://api.your-domain.com" \
 VITE_API_PREFIX_PATH="/routes" \
 VITE_APP_TITLE="Versicherung X" \
 yarn build
 ```
 
+**Important**: 
+- If using subdomain: `VITE_API_URL="https://api.your-domain.com"`
+- If using path-based: `VITE_API_URL="https://your-domain.com/api"`
+
 This creates a `dist/` folder with all static files.
 
-### Step 4: Upload Frontend Files
+### Step 2: Upload Frontend Files to ISPConfig
 
-From your local machine:
+From your local machine, upload the built frontend files:
 
 ```bash
-# Create directory on server
-ssh user@frontend-server-ip "mkdir -p ~/versicherung-x/frontend"
-
-# Upload dist folder contents
+# Upload dist folder contents to ISPConfig server
+# Replace with your actual ISPConfig path
 cd /path/to/versicherung-x/frontend
-scp -r dist/* user@frontend-server-ip:~/versicherung-x/frontend/
+scp -r dist/* user@ispconfig-server:/var/www/your-domain.com/versicherung-x/frontend/dist/
 ```
 
-### Step 5: Configure Web Server
+**Or use ISPConfig File Manager:**
+1. Log into ISPConfig
+2. Go to **Sites** → Your domain
+3. Click **File Manager**
+4. Navigate to your site's directory
+5. Create folder: `versicherung-x/frontend/dist/`
+6. Upload all files from `frontend/dist/` folder
 
-**For Nginx:**
+### Step 3: Configure ISPConfig Site
 
-```bash
-sudo nano /etc/nginx/sites-available/versicherung-x
-```
+1. **Log into ISPConfig Web Interface**
+2. Go to **Sites** → Select your domain
+3. Click on **Options** tab
+4. Scroll to **Document Root** and set it to:
+   ```
+   /var/www/your-domain.com/versicherung-x/frontend/dist
+   ```
+   (Adjust path based on your ISPConfig setup)
 
-Add this configuration:
+### Step 4: Configure Reverse Proxy in ISPConfig
+
+**For Nginx (Recommended):**
+
+1. In ISPConfig, go to **Sites** → Your domain → **Options**
+2. Scroll to **Nginx Directives**
+3. Paste this configuration:
 
 ```nginx
-server {
-    listen 80;
-    server_name your-domain.com www.your-domain.com;
-    
-    root /home/YOUR_USERNAME/versicherung-x/frontend;
-    index index.html;
-
-    # Serve static files
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Proxy API requests to backend (via Cloudflare Tunnel)
-    location /routes/ {
-        proxy_pass https://api.your-domain.com;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_pass_header Authorization;
-    }
+# Proxy API requests to backend via Cloudflare Tunnel
+location /routes/ {
+    proxy_pass https://api.your-domain.com;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_pass_header Authorization;
+    client_max_body_size 0;
+    client_body_buffer_size 1m;
+    proxy_intercept_errors on;
+    proxy_buffering on;
+    proxy_buffer_size 128k;
+    proxy_buffers 256 16k;
+    proxy_busy_buffers_size 256k;
+    proxy_temp_file_write_size 256k;
+    proxy_max_temp_file_size 0;
+    proxy_read_timeout 600;
+    proxy_connect_timeout 600;
+    proxy_send_timeout 600;
 }
-```
 
-Enable site:
-
-```bash
-sudo ln -s /etc/nginx/sites-available/versicherung-x /etc/nginx/sites-enabled/
-sudo nginx -t  # Test configuration
-sudo systemctl reload nginx
+# Handle React Router (SPA) - serve index.html for non-API routes
+location / {
+    try_files $uri $uri/ /index.html;
+}
 ```
 
 **For Apache:**
 
-```bash
-sudo nano /etc/apache2/sites-available/versicherung-x.conf
-```
-
-Add:
+1. In ISPConfig, go to **Sites** → Your domain → **Options**
+2. Scroll to **Apache Directives**
+3. Paste this configuration:
 
 ```apache
-<VirtualHost *:80>
-    ServerName your-domain.com
-    ServerAlias www.your-domain.com
+# Proxy API requests to backend via Cloudflare Tunnel
+ProxyPreserveHost On
+ProxyPass /routes/ https://api.your-domain.com/routes/
+ProxyPassReverse /routes/ https://api.your-domain.com/routes/
+
+# Don't proxy static assets
+ProxyPass /assets/ !
+ProxyPass /favicon.ico !
+
+# Handle React Router (SPA routing)
+<Directory /var/www/your-domain.com/versicherung-x/frontend/dist>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
     
-    DocumentRoot /home/YOUR_USERNAME/versicherung-x/frontend
-    
-    <Directory /home/YOUR_USERNAME/versicherung-x/frontend>
-        Options -Indexes +FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
-
-    # Proxy API requests
-    ProxyPass /routes/ https://api.your-domain.com/routes/
-    ProxyPassReverse /routes/ https://api.your-domain.com/routes/
-</VirtualHost>
+    RewriteEngine On
+    RewriteBase /
+    RewriteRule ^index\.html$ - [L]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . /index.html [L]
+</Directory>
 ```
 
-Enable modules and site:
+**Important**: 
+- Replace `https://api.your-domain.com` with your actual Cloudflare Tunnel URL
+- If using path-based routing, adjust the `ProxyPass` directives accordingly
 
-```bash
-sudo a2enmod proxy proxy_http rewrite
-sudo a2ensite versicherung-x
-sudo systemctl reload apache2
-```
+4. Click **Save**
+5. ISPConfig will regenerate the configuration files automatically
 
-### Step 6: Setup SSL (Let's Encrypt)
+### Step 5: Enable Required Modules (Apache only)
 
-```bash
-# Install certbot
-sudo apt-get install -y certbot python3-certbot-nginx
-# OR for Apache:
-# sudo apt-get install -y certbot python3-certbot-apache
+If using Apache, ensure these modules are enabled in ISPConfig:
+- `mod_proxy`
+- `mod_proxy_http`
+- `mod_rewrite`
 
-# Get certificate
-sudo certbot --nginx -d your-domain.com -d www.your-domain.com
-# OR for Apache:
-# sudo certbot --apache -d your-domain.com -d www.your-domain.com
+(ISPConfig usually has these enabled by default)
 
-# Auto-renewal is set up automatically
-```
+### Step 6: Test the Configuration
 
-### Step 7: Configure Cloudflare Tunnel for Frontend (Optional)
-
-If you want to use Cloudflare Tunnel for the frontend too:
-
-1. Create another tunnel on the frontend server (same steps as backend)
-2. Point it to `http://localhost:80` (or 443 for HTTPS)
-3. Configure DNS to point your domain to the tunnel
+1. Visit `https://your-domain.com` in your browser
+2. Open browser developer tools (F12) → Console tab
+3. Try logging in
+4. Check for any API errors in the console
+5. Verify API calls are going to `https://api.your-domain.com/routes/...`
 
 ---
 
 ## Part 3: Final Configuration
 
-### Update Frontend API Configuration
+### Architecture Overview
 
-If you're using a subdomain for the API (`api.your-domain.com`), you may need to update the frontend build:
+```
+Internet
+   ↓
+ISPConfig Server (Frontend)
+   ├── Serves static files from /frontend/dist/
+   └── Proxies /routes/* → https://api.your-domain.com (Cloudflare Tunnel)
+         ↓
+   Cloudflare Tunnel
+         ↓
+   Backend Linux VM (Docker)
+   └── FastAPI on localhost:8000
+```
+
+### Update Frontend Build (if needed)
+
+If you need to change the API URL, rebuild the frontend:
 
 ```bash
-# Rebuild with API URL
+# On local machine
 cd /path/to/versicherung-x/frontend
+
+# Rebuild with new API URL
 VITE_API_URL="https://api.your-domain.com" \
 VITE_API_PREFIX_PATH="/routes" \
 yarn build
 
-# Re-upload dist folder
-scp -r dist/* user@frontend-server-ip:~/versicherung-x/frontend/
+# Re-upload to ISPConfig
+scp -r dist/* user@ispconfig-server:/var/www/your-domain.com/versicherung-x/frontend/dist/
 ```
-
-### Test the Application
-
-1. Visit `https://your-domain.com` in your browser
-2. Try logging in
-3. Test API calls (check browser console for errors)
 
 ---
 
@@ -509,7 +507,7 @@ docker ps -a
 
 **Database connection errors:**
 - Check `.env` file has correct database credentials
-- Verify database is accessible from backend server
+- Verify database is accessible from backend VM
 - Check firewall rules
 
 **Cloudflare Tunnel not connecting:**
@@ -523,27 +521,30 @@ sudo journalctl -u cloudflared-tunnel -f
 tail -f ~/cloudflared.log
 ```
 
-### Frontend Issues
+### Frontend Issues (ISPConfig)
 
 **404 errors on routes:**
-- Check Nginx/Apache configuration
-- Verify `try_files` directive includes `/index.html`
-- Check file permissions
+- Check ISPConfig Document Root is set correctly
+- Verify `try_files` directive in Nginx (or RewriteRule in Apache)
+- Check file permissions in ISPConfig File Manager
 
 **API calls failing:**
 - Check browser console for CORS errors
-- Verify API URL in frontend build
+- Verify API URL in frontend build matches Cloudflare Tunnel URL
 - Test API endpoint directly: `curl https://api.your-domain.com/routes/`
+- Check ISPConfig reverse proxy configuration
+- Verify Cloudflare Tunnel is running and accessible
 
-**SSL certificate issues:**
-- Run `sudo certbot renew --dry-run` to test renewal
-- Check certificate expiration: `sudo certbot certificates`
+**Proxy errors:**
+- Check ISPConfig error logs
+- Verify the Cloudflare Tunnel URL is correct in proxy configuration
+- Ensure SSL certificate is valid for the API subdomain
 
 ---
 
 ## Maintenance Commands
 
-### Backend Server
+### Backend Server (Linux VM)
 
 ```bash
 # View backend logs
@@ -560,37 +561,36 @@ docker compose up -d
 
 # Check Cloudflare Tunnel status
 sudo systemctl status cloudflared-tunnel
+# OR if using nohup:
+ps aux | grep cloudflared
 ```
 
-### Frontend Server
+### Frontend (ISPConfig)
 
 ```bash
-# View Nginx logs
-sudo tail -f /var/log/nginx/error.log
-sudo tail -f /var/log/nginx/access.log
+# View logs via ISPConfig
+# ISPConfig → Sites → Your domain → Logs
 
-# Reload Nginx
-sudo systemctl reload nginx
-
-# Update frontend (after uploading new dist folder)
-# Just upload new files, no restart needed
+# Update frontend (after rebuilding)
+# Just upload new files via ISPConfig File Manager or SCP
+# No restart needed - ISPConfig serves files directly
 ```
 
 ---
 
 ## Quick Reference
 
-### Backend Server Files
+### Backend Server (Linux VM) Files
 - `~/versicherung-x/backend/` - Backend code
 - `~/.cloudflared/config.yml` - Cloudflare Tunnel config
 - `/etc/systemd/system/cloudflared-tunnel.service` - Tunnel service
 
-### Frontend Server Files
-- `~/versicherung-x/frontend/` - Static frontend files
-- `/etc/nginx/sites-available/versicherung-x` - Nginx config
+### Frontend (ISPConfig) Files
+- `/var/www/your-domain.com/versicherung-x/frontend/dist/` - Static frontend files
+- ISPConfig manages Nginx/Apache configuration
 
 ### Important URLs
-- Backend API: `https://api.your-domain.com/routes/`
+- Backend API (via Cloudflare Tunnel): `https://api.your-domain.com/routes/`
 - Frontend: `https://your-domain.com`
 
 ---
@@ -602,6 +602,8 @@ sudo systemctl reload nginx
 3. **Keep Docker images updated** - Regularly rebuild with latest dependencies
 4. **Monitor logs** for suspicious activity
 5. **Use Cloudflare's security features** - Enable WAF, DDoS protection, etc.
+6. **Backend VM is not directly exposed** - Only accessible via Cloudflare Tunnel
+7. **ISPConfig handles SSL** - No need to configure SSL separately for frontend
 
 ---
 
@@ -612,4 +614,3 @@ sudo systemctl reload nginx
 - Set up CI/CD for automated deployments
 - Configure log rotation
 - Set up database indexes (see `backend/database_indexes.sql`)
-

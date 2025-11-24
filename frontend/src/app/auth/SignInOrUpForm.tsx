@@ -98,6 +98,14 @@ export const SignInOrUpForm = (props: Props) => {
       }
     : undefined;
 
+  if (!firebaseAuth) {
+    return (
+      <div className="p-4 text-center">
+        <p className="text-red-600">Firebase is not configured. Please check your environment variables.</p>
+      </div>
+    );
+  }
+
   return (
     <StyledFirebaseAuth
       firebaseAuth={firebaseAuth}

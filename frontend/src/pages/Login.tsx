@@ -29,6 +29,10 @@ export default function Login() {
     setError(null);
     setLoading(true);
     try {
+      if (!firebaseAuth) {
+        setError("Firebase ist nicht konfiguriert. Bitte kontaktieren Sie den Administrator.");
+        return;
+      }
       await signInWithEmailAndPassword(firebaseAuth, email, password);
       // The useCurrentUser hook and useEffect above will handle the redirect to /Dashboard
       // No explicit navigate("/Dashboard") needed here if user state triggers redirect reliably.
@@ -37,9 +41,14 @@ export default function Login() {
       if (err.code) {
         switch (err.code) {
           case "auth/user-not-found":
+            setError("Ungültige E-Mail-Adresse oder falsches Passwort.");
+            break;
           case "auth/wrong-password":
           case "auth/invalid-credential": // General incorrect credential error
-            setError("Ungültige E-Mail-Adresse oder falsches Passwort.");
+            setError(
+              "Ungültige E-Mail-Adresse oder falsches Passwort. " +
+              "Wenn Sie ein importiertes Konto verwenden, müssen Sie möglicherweise Ihr Passwort zurücksetzen."
+            );
             break;
           case "auth/invalid-email":
             setError("Ungültige E-Mail-Adresse.");
@@ -117,6 +126,11 @@ export default function Login() {
             >
               Passwort vergessen?
             </Button>
+          </div>
+
+          <div className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3 rounded-md border border-amber-200 dark:border-amber-800">
+            <p className="font-medium mb-1">Hinweis für importierte Konten:</p>
+            <p>Wenn Sie ein importiertes Konto verwenden, müssen Sie möglicherweise Ihr Passwort zurücksetzen, um sich anzumelden.</p>
           </div>
 
           {error && (

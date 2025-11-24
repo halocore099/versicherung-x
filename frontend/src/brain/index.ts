@@ -1,11 +1,16 @@
 import { auth } from "app/auth";
-import { API_HOST, API_PATH, API_PREFIX_PATH } from "../constants";
+import { API_HOST, API_PATH, API_PREFIX_PATH, API_URL } from "../constants";
 import { Brain } from "./Brain";
 import type { RequestParams } from "./http-client";
 
 const isDeployedToCustomApiPath = API_PREFIX_PATH !== API_PATH;
 
 const constructBaseUrl = (): string => {
+  // If API_URL is explicitly set, use it (for Cloudflare Tunnel or custom API domain)
+  if (API_URL) {
+    return `${API_URL}${API_PREFIX_PATH}`;
+  }
+
   if (isDeployedToCustomApiPath) {
     // Access via origin domain where webapp was hosted with given api prefix path
     const domain = window.location.origin || `https://${API_HOST}`;

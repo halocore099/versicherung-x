@@ -130,7 +130,6 @@
     "@solana/wallet-adapter-wallets": "0.19.32",
     "@solana/web3.js": "1",
     "@splinetool/react-spline": "4.0.0",
-    "@stackframe/react": "patch:@stackframe/react@npm%3A2.8.12#~/.yarn/patches/@stackframe-react-npm-2.8.12-81578128be.patch",
     "@storyblok/react": "4.6.1",
     "@stripe/firestore-stripe-payments": "0.0.6",
     "@stripe/react-stripe-js": "2.9.0",
@@ -405,6 +404,7 @@
   "devDependencies": {
     "@babel/parser": "7.24.1",
     "@biomejs/biome": "1.8.3",
+    "@firebase/app": "^0.11.1",
     "@sentry/react": "7.101.1",
     "@sentry/types": "7.101.1",
     "@types/amplitude-js": "^8",
@@ -437,6 +437,7 @@
     "@types/swagger-ui-react": "^5",
     "@types/three": "^0",
     "@types/vinyl-fs": "^3",
+    "@vitejs/plugin-react": "^4.0.0",
     "@vitejs/plugin-react-swc": "3.3.2",
     "autoprefixer": "^10.4.20",
     "dotenv": "16.4.5",
@@ -455,9 +456,7 @@
     "typescript": "5.2.2",
     "typescript-language-server": "4.3.2",
     "vite": "4.4.5",
-    "vite-tsconfig-paths": "4.2.2",
-    "@vitejs/plugin-react": "^4.0.0",
-    "@firebase/app": "^0.11.1"
+    "vite-tsconfig-paths": "4.2.2"
   },
   "packageManager": "yarn@4.0.2",
   "nodeLinker": "pnpm"

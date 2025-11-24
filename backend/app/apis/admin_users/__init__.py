@@ -173,3 +173,77 @@ async def read_admin_me(current_user: AuthorizedUser):
         "is_admin_match": is_admin,
         "configured_admin_uids": ADMIN_UIDS # Changed from configured_admin_uid to configured_admin_uids
     }
+
+@router.post("/send-password-reset-to-all")
+async def send_password_reset_to_all(current_user: AuthorizedUser):
+    """
+    Sends password reset emails to all users in Firebase.
+    Useful after importing users when password hashes don't match.
+    Only callable by admin users.
+    """
+    if not service_account_json_str or not firebase_admin._apps:
+        raise HTTPException(
+            status_code=500,
+            detail="Firebase Admin SDK not initialized. Cannot send reset emails."
+        )
+
+    if current_user.sub not in ADMIN_UIDS:
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: You do not have permission to send reset emails."
+        )
+    
+    print(f"Admin user {current_user.email} (UID: {current_user.sub}) sending password reset emails to all users")
+    
+    try:
+        results = {
+            "success": [],
+            "failed": [],
+            "total": 0
+        }
+        
+        # Iterate through all users
+        page_token = None
+        while True:
+            list_users_page = auth.list_users(page_token=page_token, max_results=1000)
+            
+            for user_record in list_users_page.users:
+                results["total"] += 1
+                if user_record.email:
+                    try:
+                        # Generate password reset link
+                        reset_link = auth.generate_password_reset_link(user_record.email)
+                        results["success"].append({
+                            "uid": user_record.uid,
+                            "email": user_record.email,
+                            "reset_link": reset_link
+                        })
+                        print(f"Generated reset link for {user_record.email}")
+                    except Exception as e:
+                        results["failed"].append({
+                            "uid": user_record.uid,
+                            "email": user_record.email,
+                            "error": str(e)
+                        })
+                        print(f"Failed to generate reset link for {user_record.email}: {e}")
+            
+            # Check if there are more users
+            page_token = list_users_page.next_page_token
+            if not page_token:
+                break
+        
+        return {
+            "message": f"Processed {results['total']} users",
+            "success_count": len(results["success"]),
+            "failed_count": len(results["failed"]),
+            "success": results["success"],
+            "failed": results["failed"]
+        }
+    except Exception as e:
+        print(f"Error sending password reset emails: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error sending password reset emails: {str(e)}"
+        ) from e

@@ -5,53 +5,49 @@ import { defineConfig, splitVendorChunkPlugin } from "vite";
 import injectHTML from "vite-plugin-html-inject";
 import tsConfigPaths from "vite-tsconfig-paths";
 
-type Extension = {
-	name: string;
-	version: string;
-	config: Record<string, unknown>;
-};
-
-enum ExtensionName {
-	FIREBASE_AUTH = "firebase-auth",
-	STACK_AUTH = "stack-auth"
-}
-
-const listExtensions = (): Extension[] => {
-	if (process.env.DATABUTTON_EXTENSIONS) {
+// Get Firebase config from environment variables
+const getFirebaseConfig = (): string => {
+	// Try to get Firebase config from environment variable
+	const firebaseConfigJson = process.env.VITE_FIREBASE_CONFIG;
+	
+	if (firebaseConfigJson) {
 		try {
-			return JSON.parse(process.env.DATABUTTON_EXTENSIONS) as Extension[];
-		} catch (err: unknown) {
-			console.error("Error parsing DATABUTTON_EXTENSIONS", err);
-			console.error(process.env.DATABUTTON_EXTENSIONS);
-			return [];
+			const firebaseConfig = JSON.parse(firebaseConfigJson);
+			// Build the full config object that matches config.ts schema
+			const fullConfig = {
+				firebaseConfig: firebaseConfig,
+				signInOptions: {
+					google: process.env.VITE_FIREBASE_SIGNIN_GOOGLE === "true",
+					github: process.env.VITE_FIREBASE_SIGNIN_GITHUB === "true",
+					facebook: process.env.VITE_FIREBASE_SIGNIN_FACEBOOK === "true",
+					twitter: process.env.VITE_FIREBASE_SIGNIN_TWITTER === "true",
+					emailAndPassword: process.env.VITE_FIREBASE_SIGNIN_EMAIL !== "false", // default true
+					magicLink: process.env.VITE_FIREBASE_SIGNIN_MAGICLINK === "true",
+				},
+				siteName: process.env.VITE_FIREBASE_SITE_NAME || "Versicherung X",
+				signInSuccessUrl: process.env.VITE_FIREBASE_SIGNIN_SUCCESS_URL || "/",
+				tosLink: process.env.VITE_FIREBASE_TOS_LINK || undefined,
+				privacyPolicyLink: process.env.VITE_FIREBASE_PRIVACY_LINK || undefined,
+			};
+			return JSON.stringify(fullConfig);
+		} catch (err) {
+			console.error("Error parsing VITE_FIREBASE_CONFIG", err);
+			return JSON.stringify({});
 		}
 	}
-
-	return [];
-};
-
-const extensions = listExtensions();
-
-const getExtensionConfig = (name: string): string => {
-	const extension = extensions.find((it) => it.name === name);
-
-	if (!extension) {
-		console.warn(`Extension ${name} not found`);
-	}
-
-	return JSON.stringify(extension?.config);
+	
+	// Return empty config if not provided
+	return JSON.stringify({});
 };
 
 const buildVariables = () => {
-	const appId = process.env.DATABUTTON_PROJECT_ID;
-
 	// Environment variables with defaults
 	const apiUrl = process.env.VITE_API_URL || "";
 	const apiPath = process.env.VITE_API_PATH || "";
 	const apiHost = process.env.VITE_API_HOST || "";
 	const apiPrefixPath = process.env.VITE_API_PREFIX_PATH || "/routes";
 	const appBasePath = process.env.VITE_APP_BASE_PATH || "/";
-	const appTitle = process.env.VITE_APP_TITLE || "Databutton";
+	const appTitle = process.env.VITE_APP_TITLE || "Versicherung X";
 	
 	// WebSocket URL: convert http/https to ws/wss, or use empty for relative
 	const wsApiUrl = apiUrl 
@@ -59,7 +55,7 @@ const buildVariables = () => {
 		: "";
 
 	const defines: Record<string, string> = {
-		__APP_ID__: JSON.stringify(appId),
+		__APP_ID__: JSON.stringify(""),
 		__API_PATH__: JSON.stringify(apiPath),
 		__API_HOST__: JSON.stringify(apiHost),
 		__API_PREFIX_PATH__: JSON.stringify(apiPrefixPath),
@@ -72,10 +68,8 @@ const buildVariables = () => {
 		__APP_DEPLOY_USERNAME__: JSON.stringify(""),
 		__APP_DEPLOY_APPNAME__: JSON.stringify(""),
 		__APP_DEPLOY_CUSTOM_DOMAIN__: JSON.stringify(""),
-		__STACK_AUTH_CONFIG__: JSON.stringify(getExtensionConfig(ExtensionName.STACK_AUTH)),
-		__FIREBASE_CONFIG__: JSON.stringify(
-			getExtensionConfig(ExtensionName.FIREBASE_AUTH),
-		),
+		__STACK_AUTH_CONFIG__: JSON.stringify({}),
+		__FIREBASE_CONFIG__: getFirebaseConfig(),
 	};
 
 	return defines;
