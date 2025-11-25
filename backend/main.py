@@ -111,6 +111,15 @@ def create_app() -> FastAPI:
         expose_headers=["*"],
     )
     
+    # Add a simple CORS test endpoint
+    @app.get("/cors-test")
+    async def cors_test():
+        """Simple endpoint to test CORS configuration."""
+        return {
+            "message": "CORS is working!",
+            "allowed_origins": allowed_origins
+        }
+    
     app.include_router(import_api_routers())
 
     for route in app.routes:
