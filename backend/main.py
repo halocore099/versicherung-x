@@ -82,14 +82,25 @@ def create_app() -> FastAPI:
     
     # Configure CORS
     # Get allowed origins from environment variable or use defaults
-    cors_origins_str = os.getenv(
-        "CORS_ALLOWED_ORIGINS",
-        "https://versicherung.justcom.de,http://localhost:5173,http://localhost:3000"
-    )
-    # Split by comma and strip whitespace from each origin
-    allowed_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+    cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS")
     
-    print(f"CORS allowed origins: {allowed_origins}")
+    if cors_origins_str:
+        # Split by comma and strip whitespace from each origin
+        allowed_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+        print(f"CORS allowed origins (from ENV): {allowed_origins}")
+    else:
+        # Use defaults if not set in environment
+        allowed_origins = [
+            "https://versicherung.justcom.de",
+            "http://localhost:5173",
+            "http://localhost:3000"
+        ]
+        print(f"⚠️  CORS_ALLOWED_ORIGINS not set in environment, using defaults: {allowed_origins}")
+        print("   To customize, set CORS_ALLOWED_ORIGINS in your .env file (comma-separated)")
+    
+    if not allowed_origins:
+        print("⚠️  WARNING: No CORS origins configured! CORS will be disabled.")
+        allowed_origins = ["*"]  # Fallback to allow all (not recommended for production)
     
     app.add_middleware(
         CORSMiddleware,
