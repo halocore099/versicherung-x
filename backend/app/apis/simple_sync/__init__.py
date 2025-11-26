@@ -92,6 +92,10 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
         cursor.close()
 
         new_raw_detail_json = json.dumps(case_data, sort_keys=True)
+        
+        # Track if this is a new case or if data has changed
+        is_new_case = existing_record is None
+        data_changed = False
 
         if existing_record:
             try:
@@ -104,11 +108,18 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
                 if normalized_existing == new_raw_detail_json:
                     print(f"[{case_id}] Data is identical to DB record. Skipping update.")
                     return "skipped_no_change"
+                else:
+                    data_changed = True
+                    print(f"[{case_id}] Data has changed. Proceeding with update.")
             except (json.JSONDecodeError, TypeError) as json_err:
                 print(f"[{case_id}] Warning: Could not compare JSON. Proceeding with update. Error: {json_err}")
+                data_changed = True
+        else:
+            print(f"[{case_id}] New case. Proceeding with insert.")
+            data_changed = True
         
         # 4. Robust Data Mapping
-        print(f"[{case_id}] Data has changed or is new. Mapping fields for upsert.")
+        print(f"[{case_id}] Mapping fields for upsert.")
         
         # Safer access to bookings
         bookings = case_data.get('Bookings') or []
@@ -157,6 +168,7 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
         # Build complete data dictionary - include ALL fields that exist in the database, even if None
         # This ensures NULL fields in DB get updated properly
         # Based on the actual database schema from view_cases/__init__.py
+        # IMPORTANT: Only update lastApiUpdate if this is a new case or data has changed
         db_data = {
             'caseId': case_data.get('CaseId'),
             'caseNumber': clean_value(case_data.get('CaseNumber')),
@@ -185,9 +197,12 @@ def _process_single_case(case_id: int, start_time_utc: datetime):
             'productSerialNumber': clean_value(product_data.get('SerialNumber')),
             'totalRepairCost': total_repair_cost,
             'rawApiDetail': new_raw_detail_json,
-            'lastApiUpdate': start_time_utc,
             'isPresentInLastApiSync': 1,
         }
+        
+        # Only update lastApiUpdate timestamp if this is a new case or data has changed
+        if is_new_case or data_changed:
+            db_data['lastApiUpdate'] = start_time_utc
 
         # 5. Get existing columns from database to filter out non-existent columns
         # This allows the code to work even if some columns don't exist yet
@@ -264,6 +279,10 @@ def sync_insurance_cases_task():
             return
 
         # Step 4: Fetch details and save each insurance case using parallel processing
+        global _sync_stats
+        with _sync_lock:
+            _sync_stats["total_cases"] = len(case_ids_to_process)
+        
         upsert_count = 0
         skipped_no_change_count = 0
         skipped_not_insurance_count = 0
@@ -294,21 +313,42 @@ def sync_insurance_cases_task():
                     eta = remaining / rate if rate > 0 else 0
                     print(f"Progress: {completed}/{len(case_ids_to_process)} cases processed "
                           f"({rate:.1f} cases/sec, ETA: {eta:.0f}s)")
+                    # Update stats
+                    with _sync_lock:
+                        _sync_stats["processed"] = completed
 
-            try:
-                result = future.result()
-                if result == "upserted":
-                    upsert_count += 1
-                elif result == "skipped_no_change":
-                    skipped_no_change_count += 1
-                elif result == "skipped_not_insurance":
-                    skipped_not_insurance_count += 1
-                elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
+                try:
+                    result = future.result()
+                    if result == "upserted":
+                        upsert_count += 1
+                    elif result == "skipped_no_change":
+                        skipped_no_change_count += 1
+                    elif result == "skipped_not_insurance":
+                        skipped_not_insurance_count += 1
+                    elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
+                        error_count += 1
+                except Exception as detail_err:
+                    print(f"Error processing case {case_id}: {detail_err}")
                     error_count += 1
-            except Exception as detail_err:
-                print(f"Error processing case {case_id}: {detail_err}")
-                error_count += 1
+                    
+                # Update stats periodically
+                if completed % 50 == 0:
+                    with _sync_lock:
+                        _sync_stats["upserted"] = upsert_count
+                        _sync_stats["skipped_no_change"] = skipped_no_change_count
+                        _sync_stats["skipped_not_insurance"] = skipped_not_insurance_count
+                        _sync_stats["errors"] = error_count
+                        
         elapsed_total = time.time() - start_time
+        
+        # Final stats update
+        with _sync_lock:
+            _sync_stats["upserted"] = upsert_count
+            _sync_stats["skipped_no_change"] = skipped_no_change_count
+            _sync_stats["skipped_not_insurance"] = skipped_not_insurance_count
+            _sync_stats["errors"] = error_count
+            _sync_stats["processed"] = len(case_ids_to_process)
+        
         print(f"Sync finished in {elapsed_total:.1f}s. "
               f"Upserted: {upsert_count}, "
               f"Skipped (no change): {skipped_no_change_count}, "
@@ -328,6 +368,39 @@ def sync_insurance_cases_task():
 # Global flag to prevent multiple simultaneous syncs (thread-safe)
 _sync_in_progress = False
 _sync_lock = threading.Lock()
+_sync_start_time = None
+_sync_stats = {
+    "total_cases": 0,
+    "processed": 0,
+    "upserted": 0,
+    "skipped_no_change": 0,
+    "skipped_not_insurance": 0,
+    "errors": 0
+}
+
+@router.get("/sync-status")
+async def get_sync_status():
+    """
+    Returns the current sync status.
+    """
+    global _sync_in_progress, _sync_start_time, _sync_stats
+    
+    with _sync_lock:
+        is_running = _sync_in_progress
+        start_time = _sync_start_time
+        stats = _sync_stats.copy()
+    
+    if is_running and start_time:
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+    else:
+        elapsed = None
+    
+    return {
+        "is_running": is_running,
+        "start_time": start_time.isoformat() if start_time else None,
+        "elapsed_seconds": elapsed,
+        "stats": stats
+    }
 
 @router.post("/sync-insurance-cases")
 async def trigger_sync(background_tasks: BackgroundTasks):
@@ -337,6 +410,8 @@ async def trigger_sync(background_tasks: BackgroundTasks):
     """
     global _sync_in_progress
     
+    global _sync_start_time, _sync_stats
+    
     with _sync_lock:
         if _sync_in_progress:
             raise HTTPException(
@@ -344,19 +419,41 @@ async def trigger_sync(background_tasks: BackgroundTasks):
                 detail="A sync is already in progress. Please wait for it to complete."
             )
         _sync_in_progress = True
+        _sync_start_time = datetime.now(timezone.utc)
+        _sync_stats = {
+            "total_cases": 0,
+            "processed": 0,
+            "upserted": 0,
+            "skipped_no_change": 0,
+            "skipped_not_insurance": 0,
+            "errors": 0
+        }
     
     print("Received request to trigger simple insurance case sync.")
     
     def sync_with_cleanup():
+        global _sync_in_progress, _sync_start_time
         try:
             sync_insurance_cases_task()
         finally:
-            global _sync_in_progress
             with _sync_lock:
                 _sync_in_progress = False
+                _sync_start_time = None
     
     background_tasks.add_task(sync_with_cleanup)
     return {"message": "Simple insurance case sync process started in the background."}
+
+
+@router.post("/sync-all-insurance-cases")
+async def trigger_sync_all(background_tasks: BackgroundTasks):
+    """
+    Triggers a sync of all insurance cases in the background.
+    This is the same as /sync-insurance-cases but with a more explicit name.
+    Updates all existing cases and only changes the API timestamp if there's an actual change.
+    Prevents multiple simultaneous syncs using thread-safe locking.
+    """
+    # Reuse the same sync logic
+    return await trigger_sync(background_tasks)
 
 
 @router.post("/test-single-sync/{case_id}")

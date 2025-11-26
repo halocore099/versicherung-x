@@ -23,6 +23,7 @@ import {
   MinimalAuthTestEndpointError,
   MinimalAuthTestEndpointParams,
   ReadAdminMeData,
+  SyncStatusData,
   TestSingleSyncData,
   TestSingleSyncError,
   TestSingleSyncParams,
@@ -194,6 +195,21 @@ export class Brain<SecurityDataType = unknown> extends HttpClient<SecurityDataTy
     });
 
   /**
+   * @description Returns the current status of the insurance case sync process.
+   *
+   * @tags dbtn/module:simple_sync
+   * @name get_sync_status
+   * @summary Get Sync Status
+   * @request GET:/routes/sync-status
+   */
+  get_sync_status = (params: RequestParams = {}) =>
+    this.request<SyncStatusData, any>({
+      path: `/routes/sync-status`,
+      method: "GET",
+      ...params,
+    });
+
+  /**
    * @description Triggers the simple insurance case sync process in the background.
    *
    * @tags dbtn/module:simple_sync
@@ -204,6 +220,21 @@ export class Brain<SecurityDataType = unknown> extends HttpClient<SecurityDataTy
   trigger_sync = (params: RequestParams = {}) =>
     this.request<TriggerSyncData, any>({
       path: `/routes/sync-insurance-cases`,
+      method: "POST",
+      ...params,
+    });
+
+  /**
+   * @description Triggers a sync of all insurance cases in the background. Updates all existing cases and only changes the API timestamp if there's an actual change.
+   *
+   * @tags dbtn/module:simple_sync
+   * @name trigger_sync_all
+   * @summary Trigger Sync All
+   * @request POST:/routes/sync-all-insurance-cases
+   */
+  trigger_sync_all = (params: RequestParams = {}) =>
+    this.request<TriggerSyncData, any>({
+      path: `/routes/sync-all-insurance-cases`,
       method: "POST",
       ...params,
     });

@@ -1,12 +1,13 @@
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import brain from "brain";
-import type { RepairCaseDB, FilteredRepairCasesResponse } from "brain/data-contracts";
+import type { RepairCaseDB, FilteredRepairCasesResponse, SyncStatusData } from "brain/data-contracts";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Progress } from "@/components/ui/progress";
 import { RefreshCw, AlertTriangle, LogOut, ShieldCheck, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Filter, Menu, History, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   Pagination,
@@ -103,9 +104,11 @@ export default function DashboardPage() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [selectedTimeRange, setSelectedTimeRange] = useState<string>("_ALL_TIME_");
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
   const [totalPages, setTotalPages] = useState<number>(1);
+  const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Debounced search to improve performance
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState<string>("");
@@ -117,6 +120,48 @@ export default function DashboardPage() {
 
     return () => clearTimeout(timer);
   }, [searchTerm]);
+
+  // Poll sync status when sync is running
+  useEffect(() => {
+    const checkSyncStatus = async () => {
+      try {
+        const response = await brain.get_sync_status();
+        if (response.ok && response.data) {
+          const status = response.data;
+          setSyncStatus(status);
+          setIsSyncing(status.is_running);
+          
+          // If sync finished, refresh cases and stop polling
+          if (!status.is_running) {
+            if (syncStatusIntervalRef.current) {
+              clearInterval(syncStatusIntervalRef.current);
+              syncStatusIntervalRef.current = null;
+            }
+            // Refresh cases after sync completes
+            setTimeout(() => {
+              fetchCases(selectedInsurance, currentPage);
+            }, 1000);
+          }
+        }
+      } catch (error) {
+        console.error("Error checking sync status:", error);
+      }
+    };
+
+    // Check immediately if we think sync is running
+    if (isSyncing) {
+      checkSyncStatus();
+      // Poll every 2 seconds while syncing
+      syncStatusIntervalRef.current = setInterval(checkSyncStatus, 2000);
+    }
+
+    return () => {
+      if (syncStatusIntervalRef.current) {
+        clearInterval(syncStatusIntervalRef.current);
+        syncStatusIntervalRef.current = null;
+      }
+    };
+  }, [isSyncing, selectedInsurance, currentPage]);
 
   const fetchCases = async (insuranceFilter: string | null = null, page: number = 1) => {
     setLoading(true);
@@ -352,20 +397,17 @@ export default function DashboardPage() {
                       toast.success("Sync gestartet", {
                         description: "Die Synchronisierung läuft im Hintergrund. Die Daten werden automatisch aktualisiert.",
                       });
-                      // Auto-refresh after a delay to show new data
-                                setTimeout(() => {
-                                  fetchCases(selectedInsurance, currentPage);
-                                }, 5000);
+                      // Polling will handle status updates
                     } else {
                       toast.error("Sync fehlgeschlagen", {
                         description: "Die Synchronisierung konnte nicht gestartet werden.",
                       });
+                      setIsSyncing(false);
                     }
                   } catch (error) {
                     toast.error("Fehler beim Starten des Syncs", {
                       description: error instanceof Error ? error.message : "Unbekannter Fehler",
                     });
-                  } finally {
                     setIsSyncing(false);
                   }
                 }}
@@ -376,6 +418,43 @@ export default function DashboardPage() {
               >
                 <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                 <span className="ml-2">{isSyncing ? "Sync läuft..." : "Sync"}</span>
+              </Button>
+              
+              <Button
+                onClick={async () => {
+                  if (isSyncing) {
+                    toast.info("Sync läuft bereits...");
+                    return;
+                  }
+                  setIsSyncing(true);
+                  try {
+                    const response = await brain.trigger_sync_all();
+                    if (response.ok) {
+                      toast.success("Sync All gestartet", {
+                        description: "Alle Fälle werden synchronisiert. Die API-Timestamp wird nur bei Änderungen aktualisiert.",
+                      });
+                      // Polling will handle status updates
+                    } else {
+                      toast.error("Sync All fehlgeschlagen", {
+                        description: "Die Synchronisierung konnte nicht gestartet werden.",
+                      });
+                      setIsSyncing(false);
+                    }
+                  } catch (error) {
+                    toast.error("Fehler beim Starten des Sync All", {
+                      description: error instanceof Error ? error.message : "Unbekannter Fehler",
+                    });
+                    setIsSyncing(false);
+                  }
+                }}
+                variant="ghost"
+                size="sm"
+                disabled={isSyncing}
+                className="text-gray-600 hover:text-blue-600"
+                title="Synchronisiert alle Fälle. API-Timestamp wird nur bei Änderungen aktualisiert."
+              >
+                <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+                <span className="ml-2">{isSyncing ? "Sync läuft..." : "Sync All"}</span>
               </Button>
 
               {user && ADMIN_UIDS.includes(user.uid) && (
@@ -439,6 +518,58 @@ export default function DashboardPage() {
 
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8">
+        {/* Sync Status Indicator */}
+        {syncStatus && syncStatus.is_running && (
+          <Card className="mb-6 shadow-lg border-2 border-blue-200 bg-blue-50/80 backdrop-blur-sm">
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <RefreshCw className="h-5 w-5 text-blue-600 animate-spin" />
+                  <h3 className="font-semibold text-blue-900">Synchronisierung läuft...</h3>
+                </div>
+                {syncStatus.elapsed_seconds !== null && (
+                  <span className="text-sm text-blue-700">
+                    {Math.floor(syncStatus.elapsed_seconds / 60)}:{(Math.floor(syncStatus.elapsed_seconds % 60)).toString().padStart(2, '0')}
+                  </span>
+                )}
+              </div>
+              
+              {syncStatus.stats.total_cases > 0 && (
+                <>
+                  <Progress 
+                    value={(syncStatus.stats.processed / syncStatus.stats.total_cases) * 100} 
+                    className="mb-3 h-2"
+                  />
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                    <div>
+                      <span className="text-gray-600">Fortschritt: </span>
+                      <span className="font-semibold text-blue-700">
+                        {syncStatus.stats.processed} / {syncStatus.stats.total_cases}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600">Aktualisiert: </span>
+                      <span className="font-semibold text-green-700">{syncStatus.stats.upserted}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600">Übersprungen: </span>
+                      <span className="font-semibold text-yellow-700">
+                        {syncStatus.stats.skipped_no_change + syncStatus.stats.skipped_not_insurance}
+                      </span>
+                    </div>
+                    {syncStatus.stats.errors > 0 && (
+                      <div>
+                        <span className="text-gray-600">Fehler: </span>
+                        <span className="font-semibold text-red-700">{syncStatus.stats.errors}</span>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </Card>
+        )}
+
         {/* Filters Card */}
         <Card className="mb-8 shadow-lg border-0 bg-white/80 backdrop-blur-sm">
           <div className="p-6">

@@ -1,5 +1,5 @@
 import { auth } from "app/auth";
-import { API_HOST, API_PATH, API_PREFIX_PATH, API_URL } from "../constants";
+import { API_HOST, API_PATH, API_PREFIX_PATH, API_URL, Mode, mode } from "../constants";
 import { Brain } from "./Brain";
 import type { RequestParams } from "./http-client";
 
@@ -9,6 +9,13 @@ const constructBaseUrl = (): string => {
   // If API_URL is explicitly set, use it (for Cloudflare Tunnel or custom API domain)
   if (API_URL) {
     return `${API_URL}${API_PREFIX_PATH}`;
+  }
+
+  // In development mode, use relative path to leverage Vite's dev server proxy
+  // The proxy is configured in vite.config.ts to forward /routes to http://127.0.0.1:8000
+  if (typeof window !== "undefined" && (mode === Mode.DEV || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    // Use relative path so Vite proxy handles it
+    return API_PREFIX_PATH;
   }
 
   if (isDeployedToCustomApiPath) {
@@ -27,6 +34,7 @@ const constructBaseApiParams = (): BaseApiParams => {
   return {
     credentials: "include",
     secure: true,
+    format: "json", // Default to JSON parsing for all responses
   };
 };
 

@@ -11,6 +11,7 @@ import {
   ListFirebaseUsersData,
   MinimalAuthTestEndpointData,
   ReadAdminMeData,
+  SyncStatusData,
   TestSingleSyncData,
   TriggerSyncData,
 } from "./data-contracts";
@@ -203,6 +204,21 @@ export namespace Brain {
   }
 
   /**
+   * @description Returns the current status of the insurance case sync process.
+   * @tags dbtn/module:simple_sync
+   * @name get_sync_status
+   * @summary Get Sync Status
+   * @request GET:/routes/sync-status
+   */
+  export namespace get_sync_status {
+    export type RequestParams = {};
+    export type RequestQuery = {};
+    export type RequestBody = never;
+    export type RequestHeaders = {};
+    export type ResponseBody = SyncStatusData;
+  }
+
+  /**
    * @description Triggers the simple insurance case sync process in the background.
    * @tags dbtn/module:simple_sync
    * @name trigger_sync
@@ -210,6 +226,21 @@ export namespace Brain {
    * @request POST:/routes/sync-insurance-cases
    */
   export namespace trigger_sync {
+    export type RequestParams = {};
+    export type RequestQuery = {};
+    export type RequestBody = never;
+    export type RequestHeaders = {};
+    export type ResponseBody = TriggerSyncData;
+  }
+
+  /**
+   * @description Triggers a sync of all insurance cases in the background. Updates all existing cases and only changes the API timestamp if there's an actual change.
+   * @tags dbtn/module:simple_sync
+   * @name trigger_sync_all
+   * @summary Trigger Sync All
+   * @request POST:/routes/sync-all-insurance-cases
+   */
+  export namespace trigger_sync_all {
     export type RequestParams = {};
     export type RequestQuery = {};
     export type RequestBody = never;

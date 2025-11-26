@@ -241,6 +241,20 @@ export type ExportOldRepairCasesExcelData = any;
 
 export type TriggerSyncData = any;
 
+export interface SyncStatusData {
+  is_running: boolean;
+  start_time: string | null;
+  elapsed_seconds: number | null;
+  stats: {
+    total_cases: number;
+    processed: number;
+    upserted: number;
+    skipped_no_change: number;
+    skipped_not_insurance: number;
+    errors: number;
+  };
+}
+
 export interface TestSingleSyncParams {
   /** Case Id */
   caseId: number;
