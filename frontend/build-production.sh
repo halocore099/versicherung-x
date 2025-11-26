@@ -10,11 +10,25 @@ echo "Building frontend for production..."
 # Use production environment
 export NODE_ENV=production
 
-# Load .env.production if it exists (Vite will automatically use it)
-# You can also override values here if needed
+# Load .env.production if it exists and export all VITE_ variables
+# This ensures vite.config.ts can read them at config load time
 if [ -f .env.production ]; then
     echo "📄 Using .env.production file"
-    # Vite automatically loads .env.production during build
+    # Extract and export VITE_ variables, handling JSON values properly
+    while IFS='=' read -r key value; do
+        # Skip comments and empty lines
+        [[ "$key" =~ ^#.*$ ]] && continue
+        [[ -z "$key" ]] && continue
+        
+        # Remove quotes if present
+        value=$(echo "$value" | sed -e 's/^"//' -e 's/"$//')
+        
+        # Export the variable
+        export "$key=$value"
+    done < <(grep "^VITE_" .env.production)
+    
+    echo "✅ Loaded environment variables from .env.production"
+    echo "   VITE_API_URL=${VITE_API_URL}"
 else
     echo "⚠️  .env.production not found, using inline values"
     # Fallback to inline values
@@ -26,6 +40,7 @@ else
 fi
 
 # Build (Vite will automatically use .env.production in production mode)
+# But we've also explicitly exported the vars so vite.config.ts can read them
 npm run build
 
 echo ""
