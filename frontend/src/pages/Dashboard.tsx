@@ -1132,14 +1132,6 @@ export default function DashboardPage() {
           caseId={selectedCaseId}
         />
       </div>
-
-      {isDetailModalOpen && selectedCaseId && (
-        <RepairCaseDetailModal
-          caseId={selectedCaseId}
-          isOpen={isDetailModalOpen}
-          onClose={() => setIsDetailModalOpen(false)}
-        />
-      )}
     </div>
   );
 }
