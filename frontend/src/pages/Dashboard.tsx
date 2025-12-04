@@ -1,7 +1,7 @@
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import brain from "brain";
-import type { RepairCaseDB, FilteredRepairCasesResponse, SyncStatusData } from "brain/data-contracts";
+import type { RepairCaseDB, FilteredRepairCasesResponse, SyncStatusData } from "../brain/data-contracts";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -260,7 +260,7 @@ export default function DashboardPage() {
         : null;
 
       // Get sort field and direction
-      const sortBy = sortConfig.key || "lastApiUpdate";
+      const sortBy: string = sortConfig.key || "lastApiUpdate";
       const sortDirection = sortConfig.direction === "ascending" ? "asc" : "desc";
 
       console.log(`[Dashboard.tsx] Fetching cases with filter: ${apiFilterValue || '(all)'}, page: ${page}, limit: ${pageSize}`);
@@ -297,17 +297,17 @@ export default function DashboardPage() {
         if (page === 1 && (filterToUse === "_ALL_INSURANCES_" || !filterToUse) && availableInsurances.length === 0 && data.cases.length > 0) {
           // For insurance list, we might want to fetch all cases or use a separate endpoint
           // For now, we'll use the cases we have
-          const uniqueInsurances = Array.from(
+          const uniqueInsurances: string[] = Array.from(
             new Set(
               data.cases
                 .map(c => c.insuranceName)
-                .filter(name => name && name.toLowerCase() !== 'wertgarantie')
+                .filter((name): name is string => name !== null && name !== undefined && name.toLowerCase() !== 'wertgarantie')
             )
-          ).sort((a, b) => (a || "").localeCompare(b || ""));
+          ).sort((a, b) => a.localeCompare(b));
 
           const options: InsuranceOption[] = [
             { value: "_ALL_INSURANCES_", label: "Alle Versicherungen" },
-            ...uniqueInsurances.map(name => ({ value: name || "", label: name || "N/A" }))
+            ...uniqueInsurances.map((name: string) => ({ value: name, label: name }))
           ];
 
           setAvailableInsurances(options.filter(opt => opt.value !== ""));

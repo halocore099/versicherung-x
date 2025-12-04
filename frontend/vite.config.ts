@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import "dotenv/config";
+import { loadEnv } from "vite";
 import path from "node:path";
 import { defineConfig, splitVendorChunkPlugin } from "vite";
 import injectHTML from "vite-plugin-html-inject";
@@ -76,24 +77,34 @@ const buildVariables = () => {
 };
 
 // https://vite.dev/config/
-export default defineConfig({
-	define: buildVariables(),
-	plugins: [react(), splitVendorChunkPlugin(), tsConfigPaths(), injectHTML()],
-	server: {
-		proxy: {
-			"/routes": {
-				target: process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:8000",
-				changeOrigin: true,
-			},
-		},
-	},
-	resolve: {
-		alias: {
-			resolve: {
-				alias: {
-					"@": path.resolve(__dirname, "./src"),
+export default defineConfig(({ mode }) => {
+	// Load env file based on `mode` in the current working directory.
+	// Load .env.development when mode is 'development', etc.
+	// This ensures mode-specific env files take precedence over .env
+	const env = loadEnv(mode, process.cwd(), '');
+	
+	// Override process.env with Vite's loaded env (mode-specific files have higher priority)
+	Object.assign(process.env, env);
+	
+	return {
+		define: buildVariables(),
+		plugins: [react(), splitVendorChunkPlugin(), tsConfigPaths(), injectHTML()],
+		server: {
+			proxy: {
+				"/routes": {
+					target: process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:8000",
+					changeOrigin: true,
 				},
 			},
 		},
-	},
+		resolve: {
+			alias: {
+				resolve: {
+					alias: {
+						"@": path.resolve(__dirname, "./src"),
+					},
+				},
+			},
+		},
+	};
 });

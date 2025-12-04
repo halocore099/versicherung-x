@@ -87,8 +87,9 @@ def create_app() -> FastAPI:
     # Default origins that should always be included
     default_origins = [
         "https://versicherung.justcom.de",
-        "http://localhost:5173",
-        "http://localhost:3000"
+        "http://localhost:5173",  # Vite dev server
+        "http://localhost:3000",   # Alternative dev server
+        "http://127.0.0.1:5173",  # Vite dev server (IP variant)
     ]
     
     if cors_origins_str:

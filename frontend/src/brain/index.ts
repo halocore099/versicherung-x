@@ -6,15 +6,24 @@ import type { RequestParams } from "./http-client";
 const isDeployedToCustomApiPath = API_PREFIX_PATH !== API_PATH;
 
 const constructBaseUrl = (): string => {
-  // If API_URL is explicitly set, use it (for Cloudflare Tunnel or custom API domain)
-  if (API_URL) {
-    return `${API_URL}${API_PREFIX_PATH}`;
+  // If API_URL is explicitly set (and not empty), use it (for Cloudflare Tunnel or custom API domain)
+  // This applies to both dev and production
+  if (API_URL && API_URL.trim() !== "") {
+    const url = `${API_URL}${API_PREFIX_PATH}`;
+    if (mode === Mode.DEV) {
+      console.log("[Brain] Using API_URL from environment:", url);
+    }
+    return url;
   }
 
   // In development mode, use relative path to leverage Vite's dev server proxy
   // The proxy is configured in vite.config.ts to forward /routes to http://127.0.0.1:8000
+  // Only use this if API_URL is not set
   if (typeof window !== "undefined" && (mode === Mode.DEV || window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
     // Use relative path so Vite proxy handles it
+    if (mode === Mode.DEV) {
+      console.warn("[Brain] API_URL not set, falling back to localhost proxy. Set VITE_API_URL in .env.development to use production API.");
+    }
     return API_PREFIX_PATH;
   }
 
