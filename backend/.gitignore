@@ -33,6 +33,9 @@ ENV/
 *.swp
 *.swo
 
+# macOS
+.DS_Store
+
 # FastAPI
 .pytest_cache/
 coverage.xml
