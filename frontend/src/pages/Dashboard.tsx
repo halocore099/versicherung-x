@@ -8,7 +8,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, AlertTriangle, LogOut, ShieldCheck, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Filter, Menu, History, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, AlertTriangle, LogOut, ShieldCheck, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Filter, Menu, History, ChevronLeft, ChevronRight, Moon, Sun } from "lucide-react";
+import { useTheme } from "@/extensions/shadcn/hooks/use-theme";
 import {
   Pagination,
   PaginationContent,
@@ -95,6 +96,7 @@ export default function DashboardPage() {
   const [currentLogoUrl, setCurrentLogoUrl] = useState<string>("https://static.databutton.com/public/12488b2a-5495-49b3-9146-07e8a9e033b2/986bbf76-fbe1-44f3-b882-8143c72575ea.png");
   const navigate = useNavigate();
   const { user } = useUserGuardContext();
+  const { theme, setTheme } = useTheme();
 
   const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
@@ -109,6 +111,7 @@ export default function DashboardPage() {
   const [pageSize, setPageSize] = useState<number>(50);
   const [totalPages, setTotalPages] = useState<number>(1);
   const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isSyncInProgressRef = useRef<boolean>(false);
 
   // Debounced search to improve performance
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState<string>("");
@@ -130,6 +133,7 @@ export default function DashboardPage() {
           const status = response.data;
           setSyncStatus(status);
           setIsSyncing(status.is_running);
+          isSyncInProgressRef.current = status.is_running;
           
           // If sync finished, refresh cases and stop polling
           if (!status.is_running) {
@@ -137,6 +141,7 @@ export default function DashboardPage() {
               clearInterval(syncStatusIntervalRef.current);
               syncStatusIntervalRef.current = null;
             }
+            isSyncInProgressRef.current = false;
             // Refresh cases after sync completes
             setTimeout(() => {
               fetchCases(selectedInsurance, currentPage);
@@ -145,14 +150,23 @@ export default function DashboardPage() {
         }
       } catch (error) {
         console.error("Error checking sync status:", error);
+        // On error, assume sync is not running
+        setIsSyncing(false);
+        isSyncInProgressRef.current = false;
+        if (syncStatusIntervalRef.current) {
+          clearInterval(syncStatusIntervalRef.current);
+          syncStatusIntervalRef.current = null;
+        }
       }
     };
 
-    // Check immediately if we think sync is running
-    if (isSyncing) {
+    // Check immediately if we think sync is running or if we have sync status
+    if (isSyncing || syncStatus?.is_running) {
       checkSyncStatus();
       // Poll every 2 seconds while syncing
-      syncStatusIntervalRef.current = setInterval(checkSyncStatus, 2000);
+      if (!syncStatusIntervalRef.current) {
+        syncStatusIntervalRef.current = setInterval(checkSyncStatus, 2000);
+      }
     }
 
     return () => {
@@ -161,11 +175,80 @@ export default function DashboardPage() {
         syncStatusIntervalRef.current = null;
       }
     };
-  }, [isSyncing, selectedInsurance, currentPage]);
+  }, [isSyncing, selectedInsurance, currentPage, syncStatus?.is_running]);
+
+  // Helper function to check sync status and start polling if needed
+  // This function is non-destructive - it only updates status, never clears it unless backend confirms sync is done
+  const checkSyncStatusAndStartPolling = useCallback(async () => {
+    try {
+      const response = await brain.get_sync_status();
+      if (response.ok && response.data) {
+        const status = response.data;
+        
+        // Always update sync status with latest data from backend
+        setSyncStatus(status);
+        setIsSyncing(status.is_running);
+        isSyncInProgressRef.current = status.is_running;
+        
+        // Start polling if sync is running and we're not already polling
+        if (status.is_running && !syncStatusIntervalRef.current) {
+          syncStatusIntervalRef.current = setInterval(async () => {
+            const pollResponse = await brain.get_sync_status();
+            if (pollResponse.ok && pollResponse.data) {
+              const pollStatus = pollResponse.data;
+              setSyncStatus(pollStatus);
+              setIsSyncing(pollStatus.is_running);
+              isSyncInProgressRef.current = pollStatus.is_running;
+              if (!pollStatus.is_running) {
+                if (syncStatusIntervalRef.current) {
+                  clearInterval(syncStatusIntervalRef.current);
+                  syncStatusIntervalRef.current = null;
+                }
+                isSyncInProgressRef.current = false;
+                // Refresh cases after sync completes - use current state values
+                setTimeout(() => {
+                  // Use a function to get current values at execution time
+                  const currentInsurance = selectedInsurance;
+                  const currentPageNum = currentPage;
+                  fetchCases(currentInsurance, currentPageNum);
+                }, 1000);
+              }
+            }
+          }, 2000);
+        } else if (!status.is_running && syncStatusIntervalRef.current) {
+          // Only stop polling if backend explicitly says sync is not running
+          // This ensures we don't clear sync status prematurely
+          clearInterval(syncStatusIntervalRef.current);
+          syncStatusIntervalRef.current = null;
+          isSyncInProgressRef.current = false;
+        }
+        // If sync is not running and we're not polling, that's fine - just don't clear existing state
+        // This prevents the progress bar from disappearing during data fetches
+      }
+    } catch (error) {
+      console.error("Error checking sync status:", error);
+      // On error, don't clear sync status - just log the error
+      // This prevents the progress bar from disappearing due to network issues
+      // Only clear if we're certain sync is not running (which we can't be on error)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedInsurance, currentPage]);
+
+  // Check sync status on mount to see if a sync is already running
+  useEffect(() => {
+    checkSyncStatusAndStartPolling();
+  }, [checkSyncStatusAndStartPolling]);
 
   const fetchCases = async (insuranceFilter: string | null = null, page: number = 1) => {
     setLoading(true);
     setError(null);
+
+    // Always check sync status when fetching cases to see if a sync is running globally
+    // Do this asynchronously so it doesn't block the data fetch
+    checkSyncStatusAndStartPolling().catch(err => {
+      console.error("Error checking sync status during fetch:", err);
+      // Don't let sync status check errors affect data fetching
+    });
 
     try {
       const filterToUse = insuranceFilter !== null ? insuranceFilter : selectedInsurance;
@@ -345,20 +428,123 @@ export default function DashboardPage() {
     return message;
   }, [totalCount, selectedInsurance, availableInsurances, debouncedSearchTerm, showActiveOnly, selectedTimeRange]);
 
+  // Helper function to check if sync can be started
+  const canStartSync = useCallback(async (): Promise<boolean> => {
+    // Check local state first
+    if (isSyncInProgressRef.current || isSyncing) {
+      return false;
+    }
+    
+    // Check backend status
+    try {
+      const response = await brain.get_sync_status();
+      if (response.ok && response.data) {
+        const status = response.data;
+        if (status.is_running) {
+          setSyncStatus(status);
+          setIsSyncing(true);
+          isSyncInProgressRef.current = true;
+          return false;
+        }
+      }
+    } catch (error) {
+      console.error("Error checking sync status before starting:", error);
+      // Allow sync to proceed if we can't check status (might be network issue)
+    }
+    
+    return true;
+  }, [isSyncing]);
+
+  // Helper function to start sync with protection
+  const startSync = useCallback(async (syncType: 'sync' | 'syncAll') => {
+    // Check if sync is already in progress
+    const canStart = await canStartSync();
+    if (!canStart) {
+      toast.info("Sync läuft bereits...", {
+        description: "Bitte warten Sie, bis die aktuelle Synchronisierung abgeschlossen ist.",
+      });
+      return;
+    }
+
+    // Set local state immediately to prevent button spam
+    setIsSyncing(true);
+    isSyncInProgressRef.current = true;
+    
+    // Immediately check status to show progress bar
+    try {
+      const statusResponse = await brain.get_sync_status();
+      if (statusResponse.ok && statusResponse.data) {
+        setSyncStatus(statusResponse.data);
+      }
+    } catch (error) {
+      console.error("Error fetching initial sync status:", error);
+    }
+
+    try {
+      const response = syncType === 'syncAll' 
+        ? await brain.trigger_sync_all()
+        : await brain.trigger_sync();
+      
+      if (response.ok) {
+        toast.success(syncType === 'syncAll' ? "Sync All gestartet" : "Sync gestartet", {
+          description: syncType === 'syncAll' 
+            ? "Alle Fälle werden synchronisiert. Die API-Timestamp wird nur bei Änderungen aktualisiert."
+            : "Die Synchronisierung läuft im Hintergrund. Die Daten werden automatisch aktualisiert.",
+        });
+        
+        // Immediately fetch status again to show progress
+        setTimeout(async () => {
+          try {
+            const statusResponse = await brain.get_sync_status();
+            if (statusResponse.ok && statusResponse.data) {
+              setSyncStatus(statusResponse.data);
+              setIsSyncing(statusResponse.data.is_running);
+              isSyncInProgressRef.current = statusResponse.data.is_running;
+            }
+          } catch (error) {
+            console.error("Error fetching sync status after start:", error);
+          }
+        }, 500);
+      } else {
+        toast.error(syncType === 'syncAll' ? "Sync All fehlgeschlagen" : "Sync fehlgeschlagen", {
+          description: "Die Synchronisierung konnte nicht gestartet werden.",
+        });
+        setIsSyncing(false);
+        isSyncInProgressRef.current = false;
+      }
+    } catch (error) {
+      toast.error("Fehler beim Starten des Syncs", {
+        description: error instanceof Error ? error.message : "Unbekannter Fehler",
+      });
+      setIsSyncing(false);
+      isSyncInProgressRef.current = false;
+    }
+  }, [canStartSync]);
+
+  // Toggle theme
+  const toggleTheme = useCallback(() => {
+    const currentTheme = theme === "system" 
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : theme;
+    setTheme(currentTheme === "dark" ? "light" : "dark");
+  }, [theme, setTheme]);
+
+  const isDarkMode = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
       {/* Navigation Header */}
-      <div className="sticky top-0 z-50 bg-white/95 backdrop-blur-md border-b border-gray-200/60 shadow-sm">
+      <div className="sticky top-0 z-50 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-gray-200/60 dark:border-slate-700/60 shadow-sm">
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             {/* Logo and Title */}
             <div className="flex items-center space-x-4">
               <img src={currentLogoUrl} alt="Company Logo" className="h-10 w-auto" />
               <div>
-                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">
                   Justcom Dashboard
                 </h1>
-                <p className="text-sm text-gray-600">{statusMessage}</p>
+                <p className="text-sm text-gray-600 dark:text-gray-300">{statusMessage}</p>
               </div>
             </div>
 
@@ -369,92 +555,57 @@ export default function DashboardPage() {
                   variant="ghost"
                   onClick={() => navigate('/old-case-export')}
                   size="sm"
-                  className="text-gray-600 hover:text-blue-600"
+                  className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
                 >
                   <History className="h-4 w-4" />
                 </Button>
               )}
               <Button
-                onClick={() => fetchCases(selectedInsurance, currentPage)}
+                onClick={async () => {
+                  // Check sync status first, then refresh cases
+                  await checkSyncStatusAndStartPolling();
+                  fetchCases(selectedInsurance, currentPage);
+                }}
                 disabled={loading}
                 variant="ghost"
                 size="sm"
-                className="text-gray-600 hover:text-blue-600"
+                className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               </Button>
               
               <Button
-                onClick={async () => {
-                  if (isSyncing) {
-                    toast.info("Sync läuft bereits...");
-                    return;
-                  }
-                  setIsSyncing(true);
-                  try {
-                    const response = await brain.trigger_sync();
-                    if (response.ok) {
-                      toast.success("Sync gestartet", {
-                        description: "Die Synchronisierung läuft im Hintergrund. Die Daten werden automatisch aktualisiert.",
-                      });
-                      // Polling will handle status updates
-                    } else {
-                      toast.error("Sync fehlgeschlagen", {
-                        description: "Die Synchronisierung konnte nicht gestartet werden.",
-                      });
-                      setIsSyncing(false);
-                    }
-                  } catch (error) {
-                    toast.error("Fehler beim Starten des Syncs", {
-                      description: error instanceof Error ? error.message : "Unbekannter Fehler",
-                    });
-                    setIsSyncing(false);
-                  }
-                }}
+                onClick={() => startSync('sync')}
                 variant="ghost"
                 size="sm"
                 disabled={isSyncing}
-                className="text-gray-600 hover:text-blue-600"
+                className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
               >
                 <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                 <span className="ml-2">{isSyncing ? "Sync läuft..." : "Sync"}</span>
               </Button>
               
               <Button
-                onClick={async () => {
-                  if (isSyncing) {
-                    toast.info("Sync läuft bereits...");
-                    return;
-                  }
-                  setIsSyncing(true);
-                  try {
-                    const response = await brain.trigger_sync_all();
-                    if (response.ok) {
-                      toast.success("Sync All gestartet", {
-                        description: "Alle Fälle werden synchronisiert. Die API-Timestamp wird nur bei Änderungen aktualisiert.",
-                      });
-                      // Polling will handle status updates
-                    } else {
-                      toast.error("Sync All fehlgeschlagen", {
-                        description: "Die Synchronisierung konnte nicht gestartet werden.",
-                      });
-                      setIsSyncing(false);
-                    }
-                  } catch (error) {
-                    toast.error("Fehler beim Starten des Sync All", {
-                      description: error instanceof Error ? error.message : "Unbekannter Fehler",
-                    });
-                    setIsSyncing(false);
-                  }
-                }}
+                onClick={() => startSync('syncAll')}
                 variant="ghost"
                 size="sm"
                 disabled={isSyncing}
-                className="text-gray-600 hover:text-blue-600"
+                className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
                 title="Synchronisiert alle Fälle. API-Timestamp wird nur bei Änderungen aktualisiert."
               >
                 <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                 <span className="ml-2">{isSyncing ? "Sync läuft..." : "Sync All"}</span>
+              </Button>
+
+              {/* Theme Toggle */}
+              <Button
+                onClick={toggleTheme}
+                variant="ghost"
+                size="sm"
+                className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
+                title={isDarkMode ? "Zu hellem Modus wechseln" : "Zu dunklem Modus wechseln"}
+              >
+                {isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
               </Button>
 
               {user && ADMIN_UIDS.includes(user.uid) && (
@@ -462,7 +613,7 @@ export default function DashboardPage() {
                   onClick={() => navigate("/AdminUsersPage")}
                   variant="ghost"
                   size="sm"
-                  className="text-gray-600 hover:text-blue-600"
+                  className="text-gray-600 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400"
                 >
                   <ShieldCheck className="h-4 w-4" />
                 </Button>
@@ -472,7 +623,7 @@ export default function DashboardPage() {
                 onClick={handleLogout}
                 variant="ghost"
                 size="sm"
-                className="text-gray-600 hover:text-red-600"
+                className="text-gray-600 dark:text-gray-300 hover:text-red-600 dark:hover:text-red-400"
               >
                 <LogOut className="h-4 w-4" />
               </Button>
@@ -492,21 +643,39 @@ export default function DashboardPage() {
 
           {/* Mobile Menu */}
           {mobileMenuOpen && (
-            <div className="lg:hidden mt-4 p-4 bg-white rounded-lg shadow-lg border">
+            <div className="lg:hidden mt-4 p-4 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700">
               <div className="flex flex-col space-y-2">
-                        <Button onClick={() => fetchCases(selectedInsurance, currentPage)} disabled={loading} variant="ghost" className="justify-start">
+                <Button onClick={async () => {
+                  await checkSyncStatusAndStartPolling();
+                  fetchCases(selectedInsurance, currentPage);
+                }} disabled={loading} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
                   <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                   Aktualisieren
                 </Button>
 
+                <Button onClick={() => startSync('sync')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+                  {isSyncing ? "Sync läuft..." : "Sync"}
+                </Button>
+
+                <Button onClick={() => startSync('syncAll')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
+                  <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
+                  {isSyncing ? "Sync läuft..." : "Sync All"}
+                </Button>
+
+                <Button onClick={toggleTheme} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
+                  {isDarkMode ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
+                  {isDarkMode ? "Heller Modus" : "Dunkler Modus"}
+                </Button>
+
                 {user && ADMIN_UIDS.includes(user.uid) && (
-                  <Button onClick={() => navigate("/AdminUsersPage")} variant="ghost" className="justify-start">
+                  <Button onClick={() => navigate("/AdminUsersPage")} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
                     <ShieldCheck className="mr-2 h-4 w-4" />
                     Benutzer Verwalten
                   </Button>
                 )}
 
-                <Button onClick={handleLogout} variant="ghost" className="justify-start text-red-600">
+                <Button onClick={handleLogout} variant="ghost" className="justify-start text-red-600 dark:text-red-400">
                   <LogOut className="mr-2 h-4 w-4" />
                   Abmelden
                 </Button>
@@ -519,22 +688,23 @@ export default function DashboardPage() {
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8">
         {/* Sync Status Indicator */}
-        {syncStatus && syncStatus.is_running && (
-          <Card className="mb-6 shadow-lg border-2 border-blue-200 bg-blue-50/80 backdrop-blur-sm">
+        {/* Show progress bar if sync is running OR if we have sync status indicating it's running */}
+        {(syncStatus?.is_running === true || isSyncing === true || isSyncInProgressRef.current) && (
+          <Card className="mb-6 shadow-lg border-2 border-blue-200 dark:border-blue-700 bg-blue-50/80 dark:bg-blue-900/20 backdrop-blur-sm">
             <div className="p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <RefreshCw className="h-5 w-5 text-blue-600 animate-spin" />
-                  <h3 className="font-semibold text-blue-900">Synchronisierung läuft...</h3>
+                  <RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400 animate-spin" />
+                  <h3 className="font-semibold text-blue-900 dark:text-blue-100">Synchronisierung läuft...</h3>
                 </div>
-                {syncStatus.elapsed_seconds !== null && (
-                  <span className="text-sm text-blue-700">
+                {syncStatus?.elapsed_seconds !== null && syncStatus.elapsed_seconds !== undefined && (
+                  <span className="text-sm text-blue-700 dark:text-blue-300">
                     {Math.floor(syncStatus.elapsed_seconds / 60)}:{(Math.floor(syncStatus.elapsed_seconds % 60)).toString().padStart(2, '0')}
                   </span>
                 )}
               </div>
               
-              {syncStatus.stats.total_cases > 0 && (
+              {syncStatus && syncStatus.stats && syncStatus.stats.total_cases > 0 && (
                 <>
                   <Progress 
                     value={(syncStatus.stats.processed / syncStatus.stats.total_cases) * 100} 
@@ -542,36 +712,41 @@ export default function DashboardPage() {
                   />
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
                     <div>
-                      <span className="text-gray-600">Fortschritt: </span>
-                      <span className="font-semibold text-blue-700">
+                      <span className="text-gray-600 dark:text-gray-300">Fortschritt: </span>
+                      <span className="font-semibold text-blue-700 dark:text-blue-300">
                         {syncStatus.stats.processed} / {syncStatus.stats.total_cases}
                       </span>
                     </div>
                     <div>
-                      <span className="text-gray-600">Aktualisiert: </span>
-                      <span className="font-semibold text-green-700">{syncStatus.stats.upserted}</span>
+                      <span className="text-gray-600 dark:text-gray-300">Aktualisiert: </span>
+                      <span className="font-semibold text-green-700 dark:text-green-400">{syncStatus.stats.upserted}</span>
                     </div>
                     <div>
-                      <span className="text-gray-600">Übersprungen: </span>
-                      <span className="font-semibold text-yellow-700">
+                      <span className="text-gray-600 dark:text-gray-300">Übersprungen: </span>
+                      <span className="font-semibold text-yellow-700 dark:text-yellow-400">
                         {syncStatus.stats.skipped_no_change + syncStatus.stats.skipped_not_insurance}
                       </span>
                     </div>
                     {syncStatus.stats.errors > 0 && (
                       <div>
-                        <span className="text-gray-600">Fehler: </span>
-                        <span className="font-semibold text-red-700">{syncStatus.stats.errors}</span>
+                        <span className="text-gray-600 dark:text-gray-300">Fehler: </span>
+                        <span className="font-semibold text-red-700 dark:text-red-400">{syncStatus.stats.errors}</span>
                       </div>
                     )}
                   </div>
                 </>
+              )}
+              {(!syncStatus || !syncStatus.stats || syncStatus.stats.total_cases === 0) && (
+                <div className="text-sm text-gray-600 dark:text-gray-300">
+                  Synchronisierung wird gestartet...
+                </div>
               )}
             </div>
           </Card>
         )}
 
         {/* Filters Card */}
-        <Card className="mb-8 shadow-lg border-0 bg-white/80 backdrop-blur-sm">
+        <Card className="mb-8 shadow-lg border-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm">
           <div className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
               {/* Search */}
@@ -582,7 +757,7 @@ export default function DashboardPage() {
                   placeholder="Suche in Tabelle..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-10 pr-10 border-gray-300 focus:ring-blue-500 focus:border-blue-500"
+                  className="pl-10 pr-10 border-gray-300 dark:border-slate-600 focus:ring-blue-500 focus:border-blue-500 dark:bg-slate-700 dark:text-slate-100"
                 />
                 {searchTerm && (
                   <Button
@@ -627,9 +802,9 @@ export default function DashboardPage() {
               </Select>
 
               {/* Active Cases Toggle */}
-              <div className="flex items-center space-x-3 px-4 py-2 border border-gray-300 rounded-md bg-white">
-                <Filter className="h-4 w-4 text-gray-500" />
-                <label className="text-sm font-medium text-gray-700 cursor-pointer flex-1" htmlFor="active-toggle">
+              <div className="flex items-center space-x-3 px-4 py-2 border border-gray-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700">
+                <Filter className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-200 cursor-pointer flex-1" htmlFor="active-toggle">
                   Nur aktive Fälle
                 </label>
                 <button
@@ -672,56 +847,36 @@ export default function DashboardPage() {
         {error && (
           <>
             {error?.toLowerCase().includes("invalid data format") ? (
-              <Card className="mb-6 border border-amber-200 shadow-lg bg-gradient-to-br from-amber-50 to-red-50">
+              <Card className="mb-6 border border-amber-200 dark:border-amber-700 shadow-lg bg-gradient-to-br from-amber-50 to-red-50 dark:from-amber-900/20 dark:to-red-900/20">
                 <div className="p-6">
                   <div className="flex items-start gap-4">
                     <div className="mt-1">
-                      <AlertTriangle className="h-5 w-5 text-amber-600" />
+                      <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400" />
                     </div>
                     <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-gray-900">Unerwartetes Datenformat</h3>
-                      <p className="text-sm text-gray-700 mt-1">
+                      <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Unerwartetes Datenformat</h3>
+                      <p className="text-sm text-gray-700 dark:text-gray-300 mt-1">
                         Die API hat Daten in einem unerwarteten Format zurückgegeben. Bitte versuchen Sie es erneut oder starten Sie eine Synchronisierung.
                       </p>
                       <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <Button onClick={() => fetchCases(selectedInsurance, currentPage)} disabled={loading}>
+                        <Button onClick={async () => {
+                          await checkSyncStatusAndStartPolling();
+                          fetchCases(selectedInsurance, currentPage);
+                        }} disabled={loading}>
                           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                           Erneut laden
                         </Button>
                         <Button
-                          onClick={async () => {
-                            if (isSyncing) {
-                              toast.info("Sync läuft bereits...");
-                              return;
-                            }
-                            setIsSyncing(true);
-                            try {
-                              const response = await brain.trigger_sync();
-                              if (response.ok) {
-                                toast.success("Sync gestartet", {
-                                  description: "Die Synchronisierung läuft im Hintergrund.",
-                                });
-                                setTimeout(() => {
-                                  fetchCases(selectedInsurance, currentPage);
-                                }, 5000);
-                              } else {
-                                toast.error("Sync fehlgeschlagen");
-                              }
-                            } catch (error) {
-                              toast.error("Fehler beim Starten des Syncs");
-                            } finally {
-                              setIsSyncing(false);
-                            }
-                          }}
+                          onClick={() => startSync('sync')}
                           variant="outline"
                           disabled={isSyncing}
-                          className="border-amber-300 text-amber-700"
+                          className="border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400"
                         >
                           <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                           {isSyncing ? "Sync läuft..." : "Sync jetzt starten"}
                         </Button>
                       </div>
-                      <div className="mt-4 rounded-md bg-white/70 p-3 text-xs text-gray-700 border border-amber-100">
+                      <div className="mt-4 rounded-md bg-white/70 dark:bg-slate-800/70 p-3 text-xs text-gray-700 dark:text-gray-300 border border-amber-100 dark:border-amber-800">
                         <div className="font-medium mb-1">Technische Details</div>
                         <pre className="whitespace-pre-wrap break-words">{error}</pre>
                       </div>
@@ -740,10 +895,10 @@ export default function DashboardPage() {
         )}
 
         {loading ? (
-          <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
+          <Card className="shadow-lg border-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm">
             <div className="p-6 space-y-4">
               {[...Array(5)].map((_, i) => (
-                <div key={i} className="flex items-center space-x-4 p-4 border rounded-lg bg-gray-50">
+                <div key={i} className="flex items-center space-x-4 p-4 border dark:border-slate-700 rounded-lg bg-gray-50 dark:bg-slate-700/50">
                   <Skeleton className="h-12 w-12 rounded-full" />
                   <div className="space-y-2 flex-1">
                     <Skeleton className="h-4 w-3/4" />
@@ -755,13 +910,13 @@ export default function DashboardPage() {
             </div>
           </Card>
         ) : !error && filteredAndSortedCases.length === 0 ? (
-          <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm">
+          <Card className="shadow-lg border-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm">
             <div className="text-center py-16">
-              <div className="mx-auto w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mb-4">
-                <Search className="h-8 w-8 text-gray-400" />
+              <div className="mx-auto w-24 h-24 bg-gray-100 dark:bg-slate-700 rounded-full flex items-center justify-center mb-4">
+                <Search className="h-8 w-8 text-gray-400 dark:text-gray-500" />
               </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">Keine Fälle gefunden</h3>
-              <p className="text-gray-600 max-w-md mx-auto">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Keine Fälle gefunden</h3>
+              <p className="text-gray-600 dark:text-gray-300 max-w-md mx-auto">
                 {debouncedSearchTerm ?
                   `Keine Fälle für Ihre Suche "${debouncedSearchTerm}" gefunden.` :
                   (selectedInsurance !== "_ALL_INSURANCES_" ?
@@ -773,13 +928,13 @@ export default function DashboardPage() {
             </div>
           </Card>
         ) : !error && filteredAndSortedCases.length > 0 ? (
-          <Card className="shadow-lg border-0 bg-white/80 backdrop-blur-sm overflow-hidden">
+          <Card className="shadow-lg border-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="bg-gradient-to-r from-gray-50 to-gray-100">
+                  <TableRow className="bg-gradient-to-r from-gray-50 to-gray-100 dark:from-slate-700 dark:to-slate-800">
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-gray-200 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("insuranceContractNumber")}
                     >
                       <div className="flex items-center">
@@ -893,16 +1048,16 @@ export default function DashboardPage() {
                         setSelectedCaseId(caseItem.caseId);
                         setIsDetailModalOpen(true);
                       }}
-                      className={`cursor-pointer transition-all duration-200 hover:bg-blue-50 hover:shadow-sm ${index % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'
+                      className={`cursor-pointer transition-all duration-200 hover:bg-blue-50 dark:hover:bg-blue-900/20 hover:shadow-sm ${index % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-gray-50/50 dark:bg-slate-700/30'
                         }`}
                     >
-                      <TableCell className="font-medium text-gray-900">{caseItem.insuranceContractNumber || "N/A"}</TableCell>
-                      <TableCell className="font-medium text-blue-600">{caseItem.caseNumber || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700">{caseItem.customerName || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700">{caseItem.productName || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700">{caseItem.status || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700">{caseItem.insuranceName || "N/A"}</TableCell>
-                      <TableCell className="text-right text-gray-700">{formatDate(caseItem.lastApiUpdate)}</TableCell>
+                      <TableCell className="font-medium text-gray-900 dark:text-gray-100">{caseItem.insuranceContractNumber || "N/A"}</TableCell>
+                      <TableCell className="font-medium text-blue-600 dark:text-blue-400">{caseItem.caseNumber || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.customerName || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.productName || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.status || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.insuranceName || "N/A"}</TableCell>
+                      <TableCell className="text-right text-gray-700 dark:text-gray-300">{formatDate(caseItem.lastApiUpdate)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -911,9 +1066,9 @@ export default function DashboardPage() {
             
             {/* Pagination Controls */}
             {totalPages > 1 && (
-              <div className="p-4 border-t border-gray-200 bg-gray-50/50">
+              <div className="p-4 border-t border-gray-200 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-700/30">
                 <div className="flex items-center justify-between flex-wrap gap-4">
-                  <div className="text-sm text-gray-600">
+                  <div className="text-sm text-gray-600 dark:text-gray-300">
                     Zeige {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalCount)} von {totalCount} Fällen
                   </div>
                   <Pagination>

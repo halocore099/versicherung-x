@@ -84,18 +84,23 @@ def create_app() -> FastAPI:
     # Get allowed origins from environment variable or use defaults
     cors_origins_str = os.getenv("CORS_ALLOWED_ORIGINS")
     
+    # Default origins that should always be included
+    default_origins = [
+        "https://versicherung.justcom.de",
+        "http://localhost:5173",
+        "http://localhost:3000"
+    ]
+    
     if cors_origins_str:
         # Split by comma and strip whitespace from each origin
-        allowed_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
-        print(f"CORS allowed origins (from ENV): {allowed_origins}")
+        env_origins = [origin.strip() for origin in cors_origins_str.split(",") if origin.strip()]
+        # Merge with defaults, removing duplicates while preserving order
+        allowed_origins = list(dict.fromkeys(env_origins + default_origins))
+        print(f"✅ CORS allowed origins (merged from ENV + defaults): {allowed_origins}")
     else:
         # Use defaults if not set in environment
-        allowed_origins = [
-            "https://versicherung.justcom.de",
-            "http://localhost:5173",
-            "http://localhost:3000"
-        ]
-        print(f"⚠️  CORS_ALLOWED_ORIGINS not set in environment, using defaults: {allowed_origins}")
+        allowed_origins = default_origins
+        print(f"✅ CORS allowed origins (using defaults): {allowed_origins}")
         print("   To customize, set CORS_ALLOWED_ORIGINS in your .env file (comma-separated)")
     
     if not allowed_origins:
