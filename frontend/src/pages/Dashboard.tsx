@@ -107,6 +107,7 @@ export default function DashboardPage() {
   const [selectedTimeRange, setSelectedTimeRange] = useState<string>("_ALL_TIME_");
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
+  const [recentlyStartedSync, setRecentlyStartedSync] = useState<boolean>(false); // Track if we recently started sync for UI
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
   const [totalPages, setTotalPages] = useState<number>(1);
@@ -186,18 +187,23 @@ export default function DashboardPage() {
       if (response.ok && response.data) {
         const status = response.data;
         
-        // If we optimistically started a sync recently (within last 5 seconds), 
+        // If we optimistically started a sync recently (within last 10 seconds), 
         // don't clear the state even if backend says it's not running yet
         // This handles the race condition where backend hasn't started yet
-        const recentlyStarted = syncStartTimeRef.current && 
-          (Date.now() - syncStartTimeRef.current) < 5000;
+        // Use state flag instead of time check for more reliable UI updates
+        const recentlyStarted = recentlyStartedSync;
         
         if (status.is_running) {
           // Backend confirms sync is running - clear the optimistic start time
           syncStartTimeRef.current = null;
+          setRecentlyStartedSync(false); // Clear the flag since backend confirmed
         } else if (recentlyStarted && isSyncInProgressRef.current) {
           // Backend says not running, but we just started it - keep optimistic state
-          // Don't update state, just return early
+          // Update sync status but keep isSyncing true
+          setSyncStatus(status);
+          // Don't clear isSyncing or isSyncInProgressRef - keep them true
+          // Keep recentlyStartedSync true to maintain progress bar visibility
+          // This ensures progress bar stays visible
           return;
         }
         
@@ -222,6 +228,7 @@ export default function DashboardPage() {
                 }
                 isSyncInProgressRef.current = false;
                 syncStartTimeRef.current = null; // Clear optimistic start time
+                setRecentlyStartedSync(false); // Clear the flag
                 // Refresh cases after sync completes - use current state values
                 setTimeout(() => {
                   // Use a function to get current values at execution time
@@ -239,6 +246,7 @@ export default function DashboardPage() {
           syncStatusIntervalRef.current = null;
           isSyncInProgressRef.current = false;
           syncStartTimeRef.current = null;
+          setRecentlyStartedSync(false); // Clear the flag
         }
         // If sync is not running and we're not polling, that's fine - just don't clear existing state
         // This prevents the progress bar from disappearing during data fetches
@@ -263,10 +271,14 @@ export default function DashboardPage() {
 
     // Always check sync status when fetching cases to see if a sync is running globally
     // Do this asynchronously so it doesn't block the data fetch
-    checkSyncStatusAndStartPolling().catch(err => {
-      console.error("Error checking sync status during fetch:", err);
-      // Don't let sync status check errors affect data fetching
-    });
+    // But only if we're not in the grace period after starting a sync
+    // Use state flag instead of ref for reliable UI updates
+    if (!recentlyStartedSync) {
+      checkSyncStatusAndStartPolling().catch(err => {
+        console.error("Error checking sync status during fetch:", err);
+        // Don't let sync status check errors affect data fetching
+      });
+    }
 
     try {
       const filterToUse = insuranceFilter !== null ? insuranceFilter : selectedInsurance;
@@ -488,6 +500,16 @@ export default function DashboardPage() {
     setIsSyncing(true);
     isSyncInProgressRef.current = true;
     syncStartTimeRef.current = Date.now(); // Track when we optimistically started
+    setRecentlyStartedSync(true); // Set state to trigger UI update
+    
+    // Clear the flag after grace period (10 seconds) as a safety measure
+    // This ensures it doesn't stay true forever if something goes wrong
+    setTimeout(() => {
+      // Only clear if backend hasn't confirmed sync is running
+      if (!syncStatus?.is_running && !isSyncing) {
+        setRecentlyStartedSync(false);
+      }
+    }, 10000);
     
     // Immediately check status to show progress bar
     try {
@@ -526,6 +548,7 @@ export default function DashboardPage() {
               // If backend confirms it's running, clear the optimistic start time
               if (statusResponse.data.is_running) {
                 syncStartTimeRef.current = null;
+                setRecentlyStartedSync(false); // Clear the flag since backend confirmed
               }
             }
           } catch (error) {
@@ -539,6 +562,7 @@ export default function DashboardPage() {
         setIsSyncing(false);
         isSyncInProgressRef.current = false;
         syncStartTimeRef.current = null;
+        setRecentlyStartedSync(false);
       }
     } catch (error) {
       toast.error("Fehler beim Starten des Syncs", {
@@ -547,6 +571,7 @@ export default function DashboardPage() {
       setIsSyncing(false);
       isSyncInProgressRef.current = false;
       syncStartTimeRef.current = null;
+      setRecentlyStartedSync(false);
     }
   }, [canStartSync]);
 
@@ -718,7 +743,11 @@ export default function DashboardPage() {
       <div className="container mx-auto px-4 py-8">
         {/* Sync Status Indicator */}
         {/* Show progress bar if sync is running OR if we have sync status indicating it's running */}
-        {(syncStatus?.is_running === true || isSyncing === true || isSyncInProgressRef.current) && (
+        {/* Also show if we recently started a sync (grace period) */}
+        {((syncStatus?.is_running === true) || 
+          (isSyncing === true) || 
+          (isSyncInProgressRef.current) ||
+          (recentlyStartedSync === true)) && (
           <Card className="mb-6 shadow-lg border-2 border-blue-200 dark:border-blue-700 bg-blue-50/80 dark:bg-blue-900/20 backdrop-blur-sm">
             <div className="p-4">
               <div className="flex items-center justify-between mb-3">
