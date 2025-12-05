@@ -146,12 +146,12 @@ def create_app() -> FastAPI:
             print("Warning: Firebase config missing projectId")
             app.state.auth_config = None
         else:
-            auth_config = {
-                "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
+        auth_config = {
+            "jwks_url": "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
                 "audience": project_id,
-                "header": "authorization",
-            }
-            app.state.auth_config = AuthConfig(**auth_config)
+            "header": "authorization",
+        }
+        app.state.auth_config = AuthConfig(**auth_config)
 
     return app
 

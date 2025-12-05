@@ -112,6 +112,7 @@ export default function DashboardPage() {
   const [totalPages, setTotalPages] = useState<number>(1);
   const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isSyncInProgressRef = useRef<boolean>(false);
+  const syncStartTimeRef = useRef<number | null>(null); // Track when we optimistically started sync
 
   // Debounced search to improve performance
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState<string>("");
@@ -185,6 +186,21 @@ export default function DashboardPage() {
       if (response.ok && response.data) {
         const status = response.data;
         
+        // If we optimistically started a sync recently (within last 5 seconds), 
+        // don't clear the state even if backend says it's not running yet
+        // This handles the race condition where backend hasn't started yet
+        const recentlyStarted = syncStartTimeRef.current && 
+          (Date.now() - syncStartTimeRef.current) < 5000;
+        
+        if (status.is_running) {
+          // Backend confirms sync is running - clear the optimistic start time
+          syncStartTimeRef.current = null;
+        } else if (recentlyStarted && isSyncInProgressRef.current) {
+          // Backend says not running, but we just started it - keep optimistic state
+          // Don't update state, just return early
+          return;
+        }
+        
         // Always update sync status with latest data from backend
         setSyncStatus(status);
         setIsSyncing(status.is_running);
@@ -205,6 +221,7 @@ export default function DashboardPage() {
                   syncStatusIntervalRef.current = null;
                 }
                 isSyncInProgressRef.current = false;
+                syncStartTimeRef.current = null; // Clear optimistic start time
                 // Refresh cases after sync completes - use current state values
                 setTimeout(() => {
                   // Use a function to get current values at execution time
@@ -215,12 +232,13 @@ export default function DashboardPage() {
               }
             }
           }, 2000);
-        } else if (!status.is_running && syncStatusIntervalRef.current) {
+        } else if (!status.is_running && syncStatusIntervalRef.current && !recentlyStarted) {
           // Only stop polling if backend explicitly says sync is not running
-          // This ensures we don't clear sync status prematurely
+          // AND we haven't just started it optimistically
           clearInterval(syncStatusIntervalRef.current);
           syncStatusIntervalRef.current = null;
           isSyncInProgressRef.current = false;
+          syncStartTimeRef.current = null;
         }
         // If sync is not running and we're not polling, that's fine - just don't clear existing state
         // This prevents the progress bar from disappearing during data fetches
@@ -469,12 +487,17 @@ export default function DashboardPage() {
     // Set local state immediately to prevent button spam
     setIsSyncing(true);
     isSyncInProgressRef.current = true;
+    syncStartTimeRef.current = Date.now(); // Track when we optimistically started
     
     // Immediately check status to show progress bar
     try {
       const statusResponse = await brain.get_sync_status();
       if (statusResponse.ok && statusResponse.data) {
         setSyncStatus(statusResponse.data);
+        // If backend already confirms it's running, clear the optimistic start time
+        if (statusResponse.data.is_running) {
+          syncStartTimeRef.current = null;
+        }
       }
     } catch (error) {
       console.error("Error fetching initial sync status:", error);
@@ -500,6 +523,10 @@ export default function DashboardPage() {
               setSyncStatus(statusResponse.data);
               setIsSyncing(statusResponse.data.is_running);
               isSyncInProgressRef.current = statusResponse.data.is_running;
+              // If backend confirms it's running, clear the optimistic start time
+              if (statusResponse.data.is_running) {
+                syncStartTimeRef.current = null;
+              }
             }
           } catch (error) {
             console.error("Error fetching sync status after start:", error);
@@ -511,6 +538,7 @@ export default function DashboardPage() {
         });
         setIsSyncing(false);
         isSyncInProgressRef.current = false;
+        syncStartTimeRef.current = null;
       }
     } catch (error) {
       toast.error("Fehler beim Starten des Syncs", {
@@ -518,6 +546,7 @@ export default function DashboardPage() {
       });
       setIsSyncing(false);
       isSyncInProgressRef.current = false;
+      syncStartTimeRef.current = null;
     }
   }, [canStartSync]);
 
