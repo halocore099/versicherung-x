@@ -4,13 +4,16 @@ import pandas as pd
 import requests
 import asyncio # Added for asyncio.sleep
 from requests.auth import HTTPBasicAuth
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.auth import AuthorizedUser # Assuming endpoint might be protected
 
 router = APIRouter(tags=["Repair Case Exports"])
+limiter = Limiter(key_func=get_remote_address)
 
 REPAIRLINE_API_BASE_URL = "http://api.system.repairline.de/"
 
@@ -26,18 +29,7 @@ async def fetch_case_details_from_reparline(case_number: str) -> Dict[str, Any] 
     password = os.getenv("REPAIRLINE_API_PASSWORD")
 
     if not username or not password:
-        print("Error: Repairline API username or password not configured in secrets.")
         raise HTTPException(status_code=500, detail="Repairline API authentication not configured.")
-    
-    # DEBUG: Log retrieved credentials (REMOVE AFTER DEBUGGING)
-    print(f"DEBUG: Using Repairline Username: {username}")
-    if password and len(password) > 1:
-        print(f"DEBUG: Using Repairline Password (ends with): ...{password[-1:]}\n")
-    elif password:
-        print(f"DEBUG: Using Repairline Password (single char): {password}\n")
-    else:
-        print("DEBUG: Repairline Password is None or empty after fetching from secrets.\n")
-    # END DEBUG
 
     auth = HTTPBasicAuth(username, password)
     headers = {
@@ -57,11 +49,12 @@ async def fetch_case_details_from_reparline(case_number: str) -> Dict[str, Any] 
 
 # --- API Endpoint ---
 @router.post("/export-specific-old-cases-from-reparline-excel", tags=["stream"])
-async def export_specific_old_cases_from_reparline_excel(request_body: ExportOldCasesRequest):
+@limiter.limit("10/minute")
+async def export_specific_old_cases_from_reparline_excel(request: Request, request_body: ExportOldCasesRequest):
     """
     Accepts a list of old case numbers, fetches their details from Repairline API (in chunks),
     and returns an Excel file with specified fields.
-    THIS ENDPOINT IS CURRENTLY CONFIGURED TO BE OPEN (NO LOGIN REQUIRED).
+    Requires authentication.
     """
     CHUNK_SIZE = 100  # Number of cases to process per internal batch
     PAUSE_BETWEEN_CHUNKS_SECONDS = 2  # Pause duration between chunks

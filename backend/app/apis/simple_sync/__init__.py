@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 import requests
 import json
 import os
@@ -8,8 +8,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import threading
 from typing import Optional
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 # Get credentials from environment variables
 REPAIRLINE_API_USERNAME = os.getenv("REPAIRLINE_API_USERNAME")
@@ -639,7 +642,8 @@ async def get_sync_status():
     }
 
 @router.post("/sync-insurance-cases")
-async def trigger_sync(background_tasks: BackgroundTasks):
+@limiter.limit("5/minute")
+async def trigger_sync(request: Request, background_tasks: BackgroundTasks):
     """
     Triggers the regular insurance case sync process in the background.
     This sync fetches active cases from the API and adds/updates them.
@@ -684,7 +688,8 @@ async def trigger_sync(background_tasks: BackgroundTasks):
 
 
 @router.post("/sync-all-insurance-cases")
-async def trigger_sync_all(background_tasks: BackgroundTasks):
+@limiter.limit("5/minute")
+async def trigger_sync_all(request: Request, background_tasks: BackgroundTasks):
     """
     Triggers SYNC ALL: DB-first approach.
     1. First updates all existing DB cases (insuranceIsActive=1)

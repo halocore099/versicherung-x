@@ -2,12 +2,18 @@ import os
 import pathlib
 import json
 import dotenv
-from fastapi import FastAPI, APIRouter, Depends
+from fastapi import FastAPI, APIRouter, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 dotenv.load_dotenv()
 
 from databutton_app.mw.auth_mw import AuthConfig, get_authorized_user
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 
 def get_router_config() -> dict:
@@ -79,6 +85,10 @@ def get_firebase_config() -> dict | None:
 def create_app() -> FastAPI:
     """Create the app. This is called by uvicorn with the factory option to construct the app object."""
     app = FastAPI()
+
+    # Add rate limiter
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     
     # Configure CORS
     # Get allowed origins from environment variable or use defaults

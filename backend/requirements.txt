@@ -28,3 +28,6 @@ beautifulsoup4
 
 # Environment variables
 python-dotenv
+
+# Rate limiting
+slowapi

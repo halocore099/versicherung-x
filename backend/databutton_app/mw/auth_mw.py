@@ -61,9 +61,8 @@ def get_authorized_user(
 
         if user is not None:
             return user
-        print("Request authentication returned no user")
-    except Exception as e:
-        print(f"Request authentication failed: {e}")
+    except Exception:
+        pass  # Auth failure handled below
 
     if isinstance(request, WebSocket):
         raise WebSocketException(
@@ -111,7 +110,6 @@ def authorize_websocket(
             break
 
     if not token:
-        print(f"Missing bearer {prefix}.<token> in protocols")
         return None
 
     return authorize_token(token, auth_config)
@@ -123,12 +121,10 @@ def authorize_request(
 ) -> User | None:
     auth_header = request.headers.get(auth_config.header)
     if not auth_header:
-        print(f"Missing header '{auth_config.header}'")
         return None
 
     token = auth_header.startswith("Bearer ") and auth_header[7:]
     if not token:
-        print(f"Missing bearer token in '{auth_config.header}'")
         return None
 
     return authorize_token(token, auth_config)
@@ -145,8 +141,7 @@ def authorize_token(
     for audience, jwks_url in jwks_urls:
         try:
             key, alg = get_signing_key(jwks_url, token)
-        except Exception as e:
-            print(f"Failed to get signing key {e}")
+        except Exception:
             continue
 
         try:
@@ -156,14 +151,11 @@ def authorize_token(
                 algorithms=[alg],
                 audience=audience,
             )
-        except jwt.PyJWTError as e:
-            print(f"Failed to decode and validate token {e}")
+        except jwt.PyJWTError:
             continue
 
     try:
         user = User.model_validate(payload)
-        print(f"User {user.sub} authenticated")
         return user
-    except Exception as e:
-        print(f"Failed to parse token payload {e}")
+    except Exception:
         return None

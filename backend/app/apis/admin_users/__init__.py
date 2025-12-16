@@ -1,13 +1,16 @@
 import firebase_admin
 from firebase_admin import credentials, auth
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 import os
 import json
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.auth import AuthorizedUser # To get the calling user's details
 
 router = APIRouter(tags=["Admin - User Management"]) # Removed prefix
+limiter = Limiter(key_func=get_remote_address)
 
 # --- Firebase Admin SDK Initialization ---
 # Get Firebase service account from environment variable
@@ -60,13 +63,15 @@ class ListUsersResponse(BaseModel):
     users: list[UserDetails]
     next_page_token: str | None = None
 
-# Placeholder for your actual Firebase UID. We will update this later.
-# To get your UID: Log in to your app, and we can add a temporary display for it, 
-# or you can find it in the Firebase Console > Authentication > Users list.
-ADMIN_UIDS = ["Nw88uBB9v0XgJO6JPQjOVMtByPD3", "k9hkGKW4R4Mqh85tuYMLeAdjmNf1"] # Match centralized frontend config
+# Admin UIDs loaded from environment variable (comma-separated)
+_admin_uids_str = os.getenv("ADMIN_UIDS", "")
+ADMIN_UIDS = [uid.strip() for uid in _admin_uids_str.split(",") if uid.strip()]
+if not ADMIN_UIDS:
+    print("WARNING: ADMIN_UIDS environment variable not set or empty. No admin access will be granted.")
 
 @router.post("/create-firebase-user", response_model=CreateUserResponse)
-async def create_firebase_user(request_body: CreateUserRequest, current_user: AuthorizedUser):
+@limiter.limit("10/minute")
+async def create_firebase_user(request: Request, request_body: CreateUserRequest, current_user: AuthorizedUser):
     """
     Creates a new Firebase user with email and password. 
     Only callable by the designated admin user.
@@ -165,17 +170,17 @@ async def list_firebase_users(current_user: AuthorizedUser, page_token: str | No
 # Example of how to get the calling user's details for other admin endpoints
 @router.get("/me-admin", response_model=dict)
 async def read_admin_me(current_user: AuthorizedUser):
-    """Helper endpoint to check admin user details and if their UID matches ADMIN_UIDS."""
-    is_admin = current_user.sub in ADMIN_UIDS # Changed from == ADMIN_UID to in ADMIN_UIDS
+    """Helper endpoint to check if current user has admin privileges."""
+    is_admin = current_user.sub in ADMIN_UIDS
     return {
         "uid": current_user.sub,
         "email": current_user.email,
-        "is_admin_match": is_admin,
-        "configured_admin_uids": ADMIN_UIDS # Changed from configured_admin_uid to configured_admin_uids
+        "is_admin": is_admin
     }
 
 @router.post("/send-password-reset-to-all")
-async def send_password_reset_to_all(current_user: AuthorizedUser):
+@limiter.limit("1/hour")
+async def send_password_reset_to_all(request: Request, current_user: AuthorizedUser):
     """
     Sends password reset emails to all users in Firebase.
     Useful after importing users when password hashes don't match.
