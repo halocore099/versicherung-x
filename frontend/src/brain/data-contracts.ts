@@ -243,6 +243,7 @@ export type TriggerSyncData = any;
 
 export interface SyncStatusData {
   is_running: boolean;
+  sync_type: "sync" | "sync_all" | null;
   start_time: string | null;
   elapsed_seconds: number | null;
   stats: {
@@ -251,6 +252,7 @@ export interface SyncStatusData {
     upserted: number;
     skipped_no_change: number;
     skipped_not_insurance: number;
+    marked_inactive: number;
     errors: number;
   };
 }

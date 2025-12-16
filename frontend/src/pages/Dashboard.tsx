@@ -753,7 +753,14 @@ export default function DashboardPage() {
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <RefreshCw className="h-5 w-5 text-blue-600 dark:text-blue-400 animate-spin" />
-                  <h3 className="font-semibold text-blue-900 dark:text-blue-100">Synchronisierung läuft...</h3>
+                  <h3 className="font-semibold text-blue-900 dark:text-blue-100">
+                    {syncStatus?.sync_type === "sync_all" ? "Sync All läuft..." : "Sync läuft..."}
+                  </h3>
+                  {syncStatus?.sync_type === "sync_all" && (
+                    <span className="text-xs bg-blue-200 dark:bg-blue-800 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded">
+                      DB-First
+                    </span>
+                  )}
                 </div>
                 {syncStatus?.elapsed_seconds !== null && syncStatus.elapsed_seconds !== undefined && (
                   <span className="text-sm text-blue-700 dark:text-blue-300">
@@ -761,33 +768,39 @@ export default function DashboardPage() {
                   </span>
                 )}
               </div>
-              
+
               {syncStatus && syncStatus.stats && syncStatus.stats.total_cases > 0 && (
                 <>
-                  <Progress 
-                    value={(syncStatus.stats.processed / syncStatus.stats.total_cases) * 100} 
+                  <Progress
+                    value={(syncStatus.stats.processed / syncStatus.stats.total_cases) * 100}
                     className="mb-3 h-2"
                   />
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
                     <div>
-                      <span className="text-gray-600 dark:text-gray-300">Fortschritt: </span>
+                      <span className="text-gray-600 dark:text-slate-200">Fortschritt: </span>
                       <span className="font-semibold text-blue-700 dark:text-blue-300">
                         {syncStatus.stats.processed} / {syncStatus.stats.total_cases}
                       </span>
                     </div>
                     <div>
-                      <span className="text-gray-600 dark:text-gray-300">Aktualisiert: </span>
+                      <span className="text-gray-600 dark:text-slate-200">Aktualisiert: </span>
                       <span className="font-semibold text-green-700 dark:text-green-400">{syncStatus.stats.upserted}</span>
                     </div>
                     <div>
-                      <span className="text-gray-600 dark:text-gray-300">Übersprungen: </span>
+                      <span className="text-gray-600 dark:text-slate-200">Übersprungen: </span>
                       <span className="font-semibold text-yellow-700 dark:text-yellow-400">
                         {syncStatus.stats.skipped_no_change + syncStatus.stats.skipped_not_insurance}
                       </span>
                     </div>
+                    {(syncStatus.stats.marked_inactive ?? 0) > 0 && (
+                      <div>
+                        <span className="text-gray-600 dark:text-slate-200">Deaktiviert: </span>
+                        <span className="font-semibold text-orange-700 dark:text-orange-400">{syncStatus.stats.marked_inactive}</span>
+                      </div>
+                    )}
                     {syncStatus.stats.errors > 0 && (
                       <div>
-                        <span className="text-gray-600 dark:text-gray-300">Fehler: </span>
+                        <span className="text-gray-600 dark:text-slate-200">Fehler: </span>
                         <span className="font-semibold text-red-700 dark:text-red-400">{syncStatus.stats.errors}</span>
                       </div>
                     )}
@@ -795,7 +808,7 @@ export default function DashboardPage() {
                 </>
               )}
               {(!syncStatus || !syncStatus.stats || syncStatus.stats.total_cases === 0) && (
-                <div className="text-sm text-gray-600 dark:text-gray-300">
+                <div className="text-sm text-gray-600 dark:text-slate-200">
                   Synchronisierung wird gestartet...
                 </div>
               )}
@@ -809,7 +822,7 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
               {/* Search */}
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Search className="absolute left-3 h-4 w-4 text-gray-400 dark:text-slate-400 pointer-events-none z-10" style={{ top: '50%', transform: 'translateY(-50%)' }} />
                 <Input
                   type="text"
                   placeholder="Suche in Tabelle..."
@@ -861,8 +874,8 @@ export default function DashboardPage() {
 
               {/* Active Cases Toggle */}
               <div className="flex items-center space-x-3 px-4 py-2 border border-gray-300 dark:border-slate-600 rounded-md bg-white dark:bg-slate-700">
-                <Filter className="h-4 w-4 text-gray-500 dark:text-gray-400" />
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-200 cursor-pointer flex-1" htmlFor="active-toggle">
+                <Filter className="h-4 w-4 text-gray-500 dark:text-slate-300" />
+                <label className="text-sm font-medium text-gray-700 dark:text-slate-100 cursor-pointer flex-1" htmlFor="active-toggle">
                   Nur aktive Fälle
                 </label>
                 <button
@@ -974,7 +987,7 @@ export default function DashboardPage() {
                 <Search className="h-8 w-8 text-gray-400 dark:text-gray-500" />
               </div>
               <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Keine Fälle gefunden</h3>
-              <p className="text-gray-600 dark:text-gray-300 max-w-md mx-auto">
+              <p className="text-gray-600 dark:text-slate-200 max-w-md mx-auto">
                 {debouncedSearchTerm ?
                   `Keine Fälle für Ihre Suche "${debouncedSearchTerm}" gefunden.` :
                   (selectedInsurance !== "_ALL_INSURANCES_" ?
@@ -992,7 +1005,7 @@ export default function DashboardPage() {
                 <TableHeader>
                   <TableRow className="bg-gradient-to-r from-gray-50 to-gray-100 dark:from-slate-700 dark:to-slate-800">
                     <TableHead
-                      className="text-gray-700 dark:text-gray-200 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("insuranceContractNumber")}
                     >
                       <div className="flex items-center">
@@ -1007,7 +1020,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("caseNumber")}
                     >
                       <div className="flex items-center">
@@ -1022,7 +1035,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("customerName")}
                     >
                       <div className="flex items-center">
@@ -1037,7 +1050,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("productName")}
                     >
                       <div className="flex items-center">
@@ -1052,7 +1065,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("status")}
                     >
                       <div className="flex items-center">
@@ -1067,7 +1080,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("insuranceName")}
                     >
                       <div className="flex items-center">
@@ -1082,7 +1095,7 @@ export default function DashboardPage() {
                       </div>
                     </TableHead>
                     <TableHead
-                      className="text-right text-gray-700 font-semibold cursor-pointer hover:bg-gray-200/50 transition-colors"
+                      className="text-right text-gray-700 dark:text-slate-100 font-semibold cursor-pointer hover:bg-gray-200/50 dark:hover:bg-slate-700/50 transition-colors"
                       onClick={() => requestSort("lastApiUpdate")}
                     >
                       <div className="flex items-center justify-end">
@@ -1111,11 +1124,11 @@ export default function DashboardPage() {
                     >
                       <TableCell className="font-medium text-gray-900 dark:text-gray-100">{caseItem.insuranceContractNumber || "N/A"}</TableCell>
                       <TableCell className="font-medium text-blue-600 dark:text-blue-400">{caseItem.caseNumber || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.customerName || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.productName || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.status || "N/A"}</TableCell>
-                      <TableCell className="text-gray-700 dark:text-gray-300">{caseItem.insuranceName || "N/A"}</TableCell>
-                      <TableCell className="text-right text-gray-700 dark:text-gray-300">{formatDate(caseItem.lastApiUpdate)}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-slate-200">{caseItem.customerName || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-slate-200">{caseItem.productName || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-slate-200">{caseItem.status || "N/A"}</TableCell>
+                      <TableCell className="text-gray-700 dark:text-slate-200">{caseItem.insuranceName || "N/A"}</TableCell>
+                      <TableCell className="text-right text-gray-700 dark:text-slate-200">{formatDate(caseItem.lastApiUpdate)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -1126,7 +1139,7 @@ export default function DashboardPage() {
             {totalPages > 1 && (
               <div className="p-4 border-t border-gray-200 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-700/30">
                 <div className="flex items-center justify-between flex-wrap gap-4">
-                  <div className="text-sm text-gray-600 dark:text-gray-300">
+                  <div className="text-sm text-gray-600 dark:text-slate-200">
                     Zeige {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalCount)} von {totalCount} Fällen
                   </div>
                   <Pagination>
