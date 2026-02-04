@@ -218,6 +218,17 @@ export class HttpClient<SecurityDataType = unknown> {
         this.abortControllers.delete(cancelToken);
       }
 
+      // Handle 401 Unauthorized - redirect to login
+      if (response.status === 401) {
+        // Clear any stale auth state
+        if (typeof window !== "undefined") {
+          const currentPath = window.location.pathname;
+          if (currentPath !== "/login" && currentPath !== "/logout") {
+            window.location.href = `/login?next=${encodeURIComponent(currentPath)}`;
+          }
+        }
+      }
+
       if (!response.ok) throw data;
       return data;
     });

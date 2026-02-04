@@ -244,6 +244,7 @@ export type TriggerSyncData = any;
 export interface SyncStatusData {
   is_running: boolean;
   sync_type: "sync" | "sync_all" | null;
+  session_id?: string | null;
   start_time: string | null;
   elapsed_seconds: number | null;
   stats: {
@@ -256,6 +257,22 @@ export interface SyncStatusData {
     errors: number;
   };
 }
+
+/** ManualSyncRequest */
+export interface ManualSyncRequest {
+  identifiers: string[];
+}
+
+/** ManualSyncResponse */
+export interface ManualSyncResponse {
+  successful: number;
+  failed: number;
+  details: string[];
+}
+
+export type ManualSyncData = ManualSyncResponse;
+
+export type ManualSyncError = HTTPValidationError;
 
 export interface TestSingleSyncParams {
   /** Case Id */

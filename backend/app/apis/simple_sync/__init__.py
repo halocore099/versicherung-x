@@ -1,18 +1,173 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import requests
 import json
 import os
-from app.libs.database_management import get_mysql_connection
+import asyncio
+import uuid
+from app.libs.database_management import get_mysql_connection, get_db_connection
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import threading
-from typing import Optional
+from typing import Optional, List
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
+
+
+# =====================================================
+# SYNC SESSION PERSISTENCE
+# =====================================================
+
+def _create_sync_session(sync_type: str, user_id: str = None) -> Optional[str]:
+    """
+    Creates a new sync session record in the database.
+    Returns the session_id or None if creation failed.
+    """
+    session_id = str(uuid.uuid4())
+    try:
+        with get_db_connection() as cnx:
+            cursor = cnx.cursor()
+            cursor.execute("""
+                INSERT INTO sync_sessions (session_id, sync_type, status, started_by, created_at)
+                VALUES (%s, %s, 'pending', %s, %s)
+            """, (session_id, sync_type, user_id, datetime.now(timezone.utc)))
+            cnx.commit()
+            cursor.close()
+            print(f"[Sync Session] Created session {session_id} for {sync_type}")
+            return session_id
+    except Exception as e:
+        print(f"[Sync Session] Failed to create session: {e}")
+        return None
+
+
+def _update_sync_session(session_id: str, **kwargs) -> bool:
+    """
+    Updates a sync session record in the database.
+    Accepts any combination of: status, started_at, completed_at, total_cases,
+    processed, upserted, skipped_no_change, skipped_not_insurance, marked_inactive, errors, error_message
+    """
+    if not session_id:
+        return False
+
+    valid_fields = {
+        'status', 'started_at', 'completed_at', 'total_cases', 'processed',
+        'upserted', 'skipped_no_change', 'skipped_not_insurance', 'marked_inactive',
+        'errors', 'error_message'
+    }
+
+    updates = {k: v for k, v in kwargs.items() if k in valid_fields}
+    if not updates:
+        return True
+
+    try:
+        with get_db_connection() as cnx:
+            set_clause = ", ".join([f"{k} = %s" for k in updates.keys()])
+            values = list(updates.values())
+            values.append(session_id)
+
+            cursor = cnx.cursor()
+            cursor.execute(f"""
+                UPDATE sync_sessions SET {set_clause}, updated_at = NOW()
+                WHERE session_id = %s
+            """, values)
+            cnx.commit()
+            cursor.close()
+            return True
+    except Exception as e:
+        print(f"[Sync Session] Failed to update session {session_id}: {e}")
+        return False
+
+
+def _recover_interrupted_sessions():
+    """
+    Called on startup to mark any 'running' or 'pending' sessions as 'failed'.
+    This handles cases where the server crashed during a sync.
+    """
+    try:
+        with get_db_connection() as cnx:
+            cursor = cnx.cursor()
+            cursor.execute("""
+                UPDATE sync_sessions
+                SET status = 'failed', error_message = 'Server restarted during sync', completed_at = NOW()
+                WHERE status IN ('pending', 'running')
+            """)
+            affected = cursor.rowcount
+            cnx.commit()
+            cursor.close()
+            if affected > 0:
+                print(f"[Sync Session] Recovered {affected} interrupted sessions")
+    except Exception as e:
+        print(f"[Sync Session] Failed to recover interrupted sessions: {e}")
+
+
+def _ensure_sync_sessions_table():
+    """
+    Ensures the sync_sessions table exists. Creates it if not.
+    """
+    try:
+        with get_db_connection() as cnx:
+            cursor = cnx.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sync_sessions (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    session_id VARCHAR(36) NOT NULL UNIQUE,
+                    sync_type ENUM('sync', 'sync_all') NOT NULL,
+                    status ENUM('pending', 'running', 'completed', 'failed', 'cancelled') DEFAULT 'pending',
+                    started_at DATETIME NULL,
+                    completed_at DATETIME NULL,
+                    started_by VARCHAR(255) NULL,
+                    total_cases INT DEFAULT 0,
+                    processed INT DEFAULT 0,
+                    upserted INT DEFAULT 0,
+                    skipped_no_change INT DEFAULT 0,
+                    skipped_not_insurance INT DEFAULT 0,
+                    marked_inactive INT DEFAULT 0,
+                    errors INT DEFAULT 0,
+                    error_message TEXT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_status (status),
+                    INDEX idx_started_at (started_at DESC)
+                )
+            """)
+            cnx.commit()
+            cursor.close()
+            print("[Sync Session] Ensured sync_sessions table exists")
+    except Exception as e:
+        print(f"[Sync Session] Failed to ensure table: {e}")
+
+
+# Initialize table and recover on module load
+try:
+    _ensure_sync_sessions_table()
+    _recover_interrupted_sessions()
+except Exception as e:
+    print(f"[Sync Session] Startup initialization failed: {e}")
+
+
+# =====================================================
+# MANUAL SYNC REQUEST/RESPONSE MODELS
+# =====================================================
+
+class ManualSyncRequest(BaseModel):
+    identifiers: List[str]
+
+
+class ManualSyncDetail(BaseModel):
+    identifier: str
+    status: str
+    message: str
+
+
+class ManualSyncResponse(BaseModel):
+    successful: int
+    failed: int
+    details: List[str]
 
 # Get credentials from environment variables
 REPAIRLINE_API_USERNAME = os.getenv("REPAIRLINE_API_USERNAME")
@@ -385,7 +540,17 @@ def sync_insurance_cases_task():
                         _sync_stats["skipped_no_change"] = skipped_no_change_count
                         _sync_stats["skipped_not_insurance"] = skipped_not_insurance_count
                         _sync_stats["errors"] = error_count
-                        
+                    # Persist to database
+                    if _sync_session_id:
+                        _update_sync_session(
+                            _sync_session_id,
+                            processed=completed,
+                            upserted=upsert_count,
+                            skipped_no_change=skipped_no_change_count,
+                            skipped_not_insurance=skipped_not_insurance_count,
+                            errors=error_count
+                        )
+
         elapsed_total = time.time() - start_time
         
         # Final stats update
@@ -498,6 +663,16 @@ def sync_all_cases_task():
                             _sync_stats["skipped_no_change"] = skipped_no_change_count
                             _sync_stats["marked_inactive"] = marked_inactive_count
                             _sync_stats["errors"] = error_count
+                        # Persist to database
+                        if _sync_session_id:
+                            _update_sync_session(
+                                _sync_session_id,
+                                processed=completed,
+                                upserted=upsert_count,
+                                skipped_no_change=skipped_no_change_count,
+                                marked_inactive=marked_inactive_count,
+                                errors=error_count
+                            )
 
             print(f"Phase 1 complete. Updated: {upsert_count}, No change: {skipped_no_change_count}, "
                   f"Marked inactive: {marked_inactive_count}, Errors: {error_count}")
@@ -605,6 +780,7 @@ _sync_in_progress = False
 _sync_lock = threading.Lock()
 _sync_start_time = None
 _sync_type = None  # Track which sync type is running: 'sync' or 'sync_all'
+_sync_session_id = None  # Track current session ID for DB persistence
 _sync_stats = {
     "total_cases": 0,
     "processed": 0,
@@ -615,18 +791,20 @@ _sync_stats = {
     "errors": 0
 }
 
-@router.get("/sync-status")
-async def get_sync_status():
+
+def get_current_sync_status() -> dict:
     """
-    Returns the current sync status.
+    Returns the current sync status as a dictionary.
+    Used by both the REST endpoint and SSE stream.
     """
-    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type
+    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type, _sync_session_id
 
     with _sync_lock:
         is_running = _sync_in_progress
         start_time = _sync_start_time
         stats = _sync_stats.copy()
         sync_type = _sync_type
+        session_id = _sync_session_id
 
     if is_running and start_time:
         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
@@ -636,10 +814,63 @@ async def get_sync_status():
     return {
         "is_running": is_running,
         "sync_type": sync_type,
+        "session_id": session_id,
         "start_time": start_time.isoformat() if start_time else None,
         "elapsed_seconds": elapsed,
         "stats": stats
     }
+
+
+@router.get("/sync-status")
+async def get_sync_status():
+    """
+    Returns the current sync status.
+    """
+    return get_current_sync_status()
+
+
+@router.get("/sync-status-stream")
+async def sync_status_stream(request: Request):
+    """
+    Server-Sent Events (SSE) endpoint for real-time sync status updates.
+    Streams status updates every 0.5 seconds while sync is running.
+    Automatically closes when sync completes.
+    """
+    async def event_generator():
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    print("[SSE] Client disconnected")
+                    break
+
+                status = get_current_sync_status()
+                # Format as SSE event
+                yield f"data: {json.dumps(status)}\n\n"
+
+                # Stop streaming when sync is not running
+                if not status["is_running"]:
+                    # Send one final status and close
+                    yield f"data: {json.dumps(status)}\n\n"
+                    break
+
+                await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            print("[SSE] Stream cancelled")
+        except Exception as e:
+            print(f"[SSE] Error in event generator: {e}")
+            error_event = {"error": str(e), "is_running": False}
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
 
 @router.post("/sync-insurance-cases")
 @limiter.limit("5/minute")
@@ -650,7 +881,7 @@ async def trigger_sync(request: Request, background_tasks: BackgroundTasks):
     It does NOT mark cases as inactive - use Sync All for that.
     Prevents multiple simultaneous syncs using thread-safe locking.
     """
-    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type
+    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type, _sync_session_id
 
     with _sync_lock:
         if _sync_in_progress:
@@ -661,6 +892,7 @@ async def trigger_sync(request: Request, background_tasks: BackgroundTasks):
         _sync_in_progress = True
         _sync_start_time = datetime.now(timezone.utc)
         _sync_type = "sync"
+        _sync_session_id = _create_sync_session("sync")
         _sync_stats = {
             "total_cases": 0,
             "processed": 0,
@@ -673,15 +905,41 @@ async def trigger_sync(request: Request, background_tasks: BackgroundTasks):
 
     print("Received request to trigger regular insurance case sync (API-first).")
 
+    # Update session to running status
+    if _sync_session_id:
+        _update_sync_session(_sync_session_id, status="running", started_at=_sync_start_time)
+
     def sync_with_cleanup():
-        global _sync_in_progress, _sync_start_time, _sync_type
+        global _sync_in_progress, _sync_start_time, _sync_type, _sync_session_id
+        session_id = _sync_session_id
         try:
             sync_insurance_cases_task()
+            # Mark session as completed
+            if session_id:
+                with _sync_lock:
+                    final_stats = _sync_stats.copy()
+                _update_sync_session(
+                    session_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc),
+                    **final_stats
+                )
+        except Exception as e:
+            # Mark session as failed
+            if session_id:
+                _update_sync_session(
+                    session_id,
+                    status="failed",
+                    completed_at=datetime.now(timezone.utc),
+                    error_message=str(e)
+                )
+            raise
         finally:
             with _sync_lock:
                 _sync_in_progress = False
                 _sync_start_time = None
                 _sync_type = None
+                _sync_session_id = None
 
     background_tasks.add_task(sync_with_cleanup)
     return {"message": "Regular sync started. Fetching active cases from API."}
@@ -699,7 +957,7 @@ async def trigger_sync_all(request: Request, background_tasks: BackgroundTasks):
     This is the comprehensive sync that cleans up stale data.
     Prevents multiple simultaneous syncs using thread-safe locking.
     """
-    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type
+    global _sync_in_progress, _sync_start_time, _sync_stats, _sync_type, _sync_session_id
 
     with _sync_lock:
         if _sync_in_progress:
@@ -710,6 +968,7 @@ async def trigger_sync_all(request: Request, background_tasks: BackgroundTasks):
         _sync_in_progress = True
         _sync_start_time = datetime.now(timezone.utc)
         _sync_type = "sync_all"
+        _sync_session_id = _create_sync_session("sync_all")
         _sync_stats = {
             "total_cases": 0,
             "processed": 0,
@@ -722,15 +981,41 @@ async def trigger_sync_all(request: Request, background_tasks: BackgroundTasks):
 
     print("Received request to trigger SYNC ALL (DB-first) insurance case sync.")
 
+    # Update session to running status
+    if _sync_session_id:
+        _update_sync_session(_sync_session_id, status="running", started_at=_sync_start_time)
+
     def sync_all_with_cleanup():
-        global _sync_in_progress, _sync_start_time, _sync_type
+        global _sync_in_progress, _sync_start_time, _sync_type, _sync_session_id
+        session_id = _sync_session_id
         try:
             sync_all_cases_task()
+            # Mark session as completed
+            if session_id:
+                with _sync_lock:
+                    final_stats = _sync_stats.copy()
+                _update_sync_session(
+                    session_id,
+                    status="completed",
+                    completed_at=datetime.now(timezone.utc),
+                    **final_stats
+                )
+        except Exception as e:
+            # Mark session as failed
+            if session_id:
+                _update_sync_session(
+                    session_id,
+                    status="failed",
+                    completed_at=datetime.now(timezone.utc),
+                    error_message=str(e)
+                )
+            raise
         finally:
             with _sync_lock:
                 _sync_in_progress = False
                 _sync_start_time = None
                 _sync_type = None
+                _sync_session_id = None
 
     background_tasks.add_task(sync_all_with_cleanup)
     return {"message": "Sync All started. Checking existing DB cases first, then looking for new cases."}
@@ -745,10 +1030,94 @@ async def test_single_sync(case_id: int):
     try:
         start_time_utc = datetime.now(timezone.utc)
         result = _process_single_case(case_id, start_time_utc)
-        
+
         return {"message": f"Sync test for case {case_id} completed.", "result": result}
     except Exception as e:
         import traceback
         print(f"An error occurred during the single case sync test: {e}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/manual-sync")
+@limiter.limit("10/minute")
+async def manual_sync(request: Request, body: ManualSyncRequest):
+    """
+    Manually sync specific cases by their identifiers (case ID or case number).
+    Processes each identifier and returns results.
+    """
+    print(f"[Manual Sync] Received request to sync {len(body.identifiers)} cases")
+
+    if not body.identifiers:
+        raise HTTPException(status_code=400, detail="No identifiers provided")
+
+    if len(body.identifiers) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 identifiers per request")
+
+    start_time_utc = datetime.now(timezone.utc)
+    successful = 0
+    failed = 0
+    details = []
+
+    for identifier in body.identifiers:
+        identifier = identifier.strip()
+        if not identifier:
+            continue
+
+        try:
+            # Try to parse as case ID first
+            case_id = None
+            if identifier.isdigit():
+                case_id = int(identifier)
+            else:
+                # Look up by case number in database
+                try:
+                    with get_db_connection() as cnx:
+                        cursor = cnx.cursor(dictionary=True)
+                        cursor.execute(
+                            "SELECT caseId FROM repair_cases WHERE caseNumber = %s",
+                            (identifier,)
+                        )
+                        row = cursor.fetchone()
+                        cursor.close()
+                        if row:
+                            case_id = row['caseId']
+                except Exception as e:
+                    print(f"[Manual Sync] Error looking up case number {identifier}: {e}")
+
+            if case_id is None:
+                details.append(f"{identifier}: Not found in database")
+                failed += 1
+                continue
+
+            # Process the case
+            result = _process_single_case(case_id, start_time_utc, mark_inactive_if_not_insurance=False)
+
+            if result == "upserted":
+                details.append(f"{identifier}: Synced successfully")
+                successful += 1
+            elif result == "skipped_no_change":
+                details.append(f"{identifier}: No changes detected")
+                successful += 1  # Count as success since it's up to date
+            elif result == "skipped_not_insurance":
+                details.append(f"{identifier}: Not an insurance case")
+                failed += 1
+            elif result == "marked_inactive":
+                details.append(f"{identifier}: Marked as inactive")
+                successful += 1
+            else:
+                details.append(f"{identifier}: {result}")
+                failed += 1
+
+        except Exception as e:
+            print(f"[Manual Sync] Error processing {identifier}: {e}")
+            details.append(f"{identifier}: Error - {str(e)}")
+            failed += 1
+
+    print(f"[Manual Sync] Completed: {successful} successful, {failed} failed")
+
+    return ManualSyncResponse(
+        successful=successful,
+        failed=failed,
+        details=details
+    )

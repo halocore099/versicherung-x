@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useState } from "react";
 import brain from "brain";
-import { ManualSyncResponse } from "types";
+import type { ManualSyncResponse } from "types";
 
 interface Props {
   isOpen: boolean;
@@ -24,20 +24,15 @@ export function ManualSyncModal({ isOpen, onClose }: Props) {
   const handleSync = async () => {
     setIsLoading(true);
     setResult(null);
-    const identifierList = identifiers.split(/\\n|\\s|,/).filter(Boolean);
+    // Split on newlines, spaces, or commas
+    const identifierList = identifiers.split(/[\n\s,]+/).filter(Boolean);
 
     try {
-      // Note: manual_sync method doesn't exist in the brain client
-      // This will need to be implemented or use an existing method
-      // For now, this is a placeholder that will fail gracefully
-      const response = await (brain as any).manual_sync({ identifiers: identifierList });
-      if (response && response.data) {
+      const response = await brain.manual_sync({ identifiers: identifierList });
+      if (response.ok && response.data) {
         setResult(response.data);
-      } else if (response) {
-        // Fallback if response structure is different
-        setResult(response);
       } else {
-        throw new Error("Manual sync method not available");
+        throw new Error("Manual sync failed");
       }
     } catch (error) {
       console.error("Manual sync failed:", error);
@@ -45,7 +40,7 @@ export function ManualSyncModal({ isOpen, onClose }: Props) {
       setResult({
         successful: 0,
         failed: identifierList.length,
-        details: [`Frontend Error: ${errorDetail}`],
+        details: [`Error: ${errorDetail}`],
       });
     } finally {
       setIsLoading(false);

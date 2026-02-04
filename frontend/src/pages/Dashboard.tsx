@@ -1,14 +1,14 @@
 
-import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import brain from "brain";
-import type { RepairCaseDB, FilteredRepairCasesResponse, SyncStatusData } from "../brain/data-contracts";
+import type { RepairCaseDB, FilteredRepairCasesResponse } from "../brain/data-contracts";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Progress } from "@/components/ui/progress";
-import { RefreshCw, AlertTriangle, LogOut, ShieldCheck, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Filter, Menu, History, ChevronLeft, ChevronRight, Moon, Sun } from "lucide-react";
+import { RefreshCw, AlertTriangle, LogOut, ShieldCheck, ArrowUpDown, ArrowUp, ArrowDown, Search, X, Filter, Menu, History, Moon, Sun } from "lucide-react";
 import { useTheme } from "@/extensions/shadcn/hooks/use-theme";
 import {
   Pagination,
@@ -26,12 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { firebaseAuth, useUserGuardContext, API_URL } from "app";
+import { firebaseAuth, useUserGuardContext } from "app";
 import { useNavigate } from "react-router-dom";
 import RepairCaseDetailModal from "components/RepairCaseDetailModal";
 import { Input } from "@/components/ui/input";
 import { ADMIN_UIDS } from "utils/authConfig";
 import { toast } from "sonner";
+import { useSyncStore, selectSyncProgress } from "../stores/syncStore";
+import { useSyncStatusSSE } from "../hooks/useSyncStatusSSE";
 
 // Helper to format date strings
 const formatDate = (dateString?: string | null) => {
@@ -105,15 +107,13 @@ export default function DashboardPage() {
   const [showActiveOnly, setShowActiveOnly] = useState<boolean>(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [selectedTimeRange, setSelectedTimeRange] = useState<string>("_ALL_TIME_");
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
-  const [recentlyStartedSync, setRecentlyStartedSync] = useState<boolean>(false); // Track if we recently started sync for UI
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
   const [totalPages, setTotalPages] = useState<number>(1);
-  const syncStatusIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const isSyncInProgressRef = useRef<boolean>(false);
-  const syncStartTimeRef = useRef<number | null>(null); // Track when we optimistically started sync
+
+  // Use Zustand store for sync state
+  const { isSyncing, syncStatus, startSync, fetchStatus: refreshSyncStatus } = useSyncStore();
+  const syncProgress = useSyncStore(selectSyncProgress);
 
   // Debounced search to improve performance
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState<string>("");
@@ -126,159 +126,9 @@ export default function DashboardPage() {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  // Poll sync status when sync is running
-  useEffect(() => {
-    const checkSyncStatus = async () => {
-      try {
-        const response = await brain.get_sync_status();
-        if (response.ok && response.data) {
-          const status = response.data;
-          setSyncStatus(status);
-          setIsSyncing(status.is_running);
-          isSyncInProgressRef.current = status.is_running;
-          
-          // If sync finished, refresh cases and stop polling
-          if (!status.is_running) {
-            if (syncStatusIntervalRef.current) {
-              clearInterval(syncStatusIntervalRef.current);
-              syncStatusIntervalRef.current = null;
-            }
-            isSyncInProgressRef.current = false;
-            // Refresh cases after sync completes
-            setTimeout(() => {
-              fetchCases(selectedInsurance, currentPage);
-            }, 1000);
-          }
-        }
-      } catch (error) {
-        console.error("Error checking sync status:", error);
-        // On error, assume sync is not running
-        setIsSyncing(false);
-        isSyncInProgressRef.current = false;
-        if (syncStatusIntervalRef.current) {
-          clearInterval(syncStatusIntervalRef.current);
-          syncStatusIntervalRef.current = null;
-        }
-      }
-    };
-
-    // Check immediately if we think sync is running or if we have sync status
-    if (isSyncing || syncStatus?.is_running) {
-      checkSyncStatus();
-      // Poll every 2 seconds while syncing
-      if (!syncStatusIntervalRef.current) {
-        syncStatusIntervalRef.current = setInterval(checkSyncStatus, 2000);
-      }
-    }
-
-    return () => {
-      if (syncStatusIntervalRef.current) {
-        clearInterval(syncStatusIntervalRef.current);
-        syncStatusIntervalRef.current = null;
-      }
-    };
-  }, [isSyncing, selectedInsurance, currentPage, syncStatus?.is_running]);
-
-  // Helper function to check sync status and start polling if needed
-  // This function is non-destructive - it only updates status, never clears it unless backend confirms sync is done
-  const checkSyncStatusAndStartPolling = useCallback(async () => {
-    try {
-      const response = await brain.get_sync_status();
-      if (response.ok && response.data) {
-        const status = response.data;
-        
-        // If we optimistically started a sync recently (within last 10 seconds), 
-        // don't clear the state even if backend says it's not running yet
-        // This handles the race condition where backend hasn't started yet
-        // Use state flag instead of time check for more reliable UI updates
-        const recentlyStarted = recentlyStartedSync;
-        
-        if (status.is_running) {
-          // Backend confirms sync is running - clear the optimistic start time
-          syncStartTimeRef.current = null;
-          setRecentlyStartedSync(false); // Clear the flag since backend confirmed
-        } else if (recentlyStarted && isSyncInProgressRef.current) {
-          // Backend says not running, but we just started it - keep optimistic state
-          // Update sync status but keep isSyncing true
-          setSyncStatus(status);
-          // Don't clear isSyncing or isSyncInProgressRef - keep them true
-          // Keep recentlyStartedSync true to maintain progress bar visibility
-          // This ensures progress bar stays visible
-          return;
-        }
-        
-        // Always update sync status with latest data from backend
-        setSyncStatus(status);
-        setIsSyncing(status.is_running);
-        isSyncInProgressRef.current = status.is_running;
-        
-        // Start polling if sync is running and we're not already polling
-        if (status.is_running && !syncStatusIntervalRef.current) {
-          syncStatusIntervalRef.current = setInterval(async () => {
-            const pollResponse = await brain.get_sync_status();
-            if (pollResponse.ok && pollResponse.data) {
-              const pollStatus = pollResponse.data;
-              setSyncStatus(pollStatus);
-              setIsSyncing(pollStatus.is_running);
-              isSyncInProgressRef.current = pollStatus.is_running;
-              if (!pollStatus.is_running) {
-                if (syncStatusIntervalRef.current) {
-                  clearInterval(syncStatusIntervalRef.current);
-                  syncStatusIntervalRef.current = null;
-                }
-                isSyncInProgressRef.current = false;
-                syncStartTimeRef.current = null; // Clear optimistic start time
-                setRecentlyStartedSync(false); // Clear the flag
-                // Refresh cases after sync completes - use current state values
-                setTimeout(() => {
-                  // Use a function to get current values at execution time
-                  const currentInsurance = selectedInsurance;
-                  const currentPageNum = currentPage;
-                  fetchCases(currentInsurance, currentPageNum);
-                }, 1000);
-              }
-            }
-          }, 2000);
-        } else if (!status.is_running && syncStatusIntervalRef.current && !recentlyStarted) {
-          // Only stop polling if backend explicitly says sync is not running
-          // AND we haven't just started it optimistically
-          clearInterval(syncStatusIntervalRef.current);
-          syncStatusIntervalRef.current = null;
-          isSyncInProgressRef.current = false;
-          syncStartTimeRef.current = null;
-          setRecentlyStartedSync(false); // Clear the flag
-        }
-        // If sync is not running and we're not polling, that's fine - just don't clear existing state
-        // This prevents the progress bar from disappearing during data fetches
-      }
-    } catch (error) {
-      console.error("Error checking sync status:", error);
-      // On error, don't clear sync status - just log the error
-      // This prevents the progress bar from disappearing due to network issues
-      // Only clear if we're certain sync is not running (which we can't be on error)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedInsurance, currentPage]);
-
-  // Check sync status on mount to see if a sync is already running
-  useEffect(() => {
-    checkSyncStatusAndStartPolling();
-  }, [checkSyncStatusAndStartPolling]);
-
-  const fetchCases = async (insuranceFilter: string | null = null, page: number = 1) => {
+  const fetchCases = useCallback(async (insuranceFilter: string | null = null, page: number = 1) => {
     setLoading(true);
     setError(null);
-
-    // Always check sync status when fetching cases to see if a sync is running globally
-    // Do this asynchronously so it doesn't block the data fetch
-    // But only if we're not in the grace period after starting a sync
-    // Use state flag instead of ref for reliable UI updates
-    if (!recentlyStartedSync) {
-      checkSyncStatusAndStartPolling().catch(err => {
-        console.error("Error checking sync status during fetch:", err);
-        // Don't let sync status check errors affect data fetching
-      });
-    }
 
     try {
       const filterToUse = insuranceFilter !== null ? insuranceFilter : selectedInsurance;
@@ -358,7 +208,18 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedInsurance, selectedTimeRange, sortConfig, debouncedSearchTerm, showActiveOnly, pageSize, availableInsurances.length]);
+
+  // Use SSE hook for real-time sync status updates
+  useSyncStatusSSE({
+    onSyncComplete: useCallback(() => {
+      toast.success("Sync abgeschlossen", {
+        description: "Die Daten wurden erfolgreich synchronisiert.",
+      });
+      // Refresh cases after sync completes
+      fetchCases(selectedInsurance, currentPage);
+    }, [fetchCases, selectedInsurance, currentPage]),
+  });
 
   // Filters and sorting are now handled by the backend
   // We just use the cases directly from the API
@@ -458,122 +319,28 @@ export default function DashboardPage() {
     return message;
   }, [totalCount, selectedInsurance, availableInsurances, debouncedSearchTerm, showActiveOnly, selectedTimeRange]);
 
-  // Helper function to check if sync can be started
-  const canStartSync = useCallback(async (): Promise<boolean> => {
-    // Check local state first
-    if (isSyncInProgressRef.current || isSyncing) {
-      return false;
-    }
-    
-    // Check backend status
-    try {
-      const response = await brain.get_sync_status();
-      if (response.ok && response.data) {
-        const status = response.data;
-        if (status.is_running) {
-          setSyncStatus(status);
-          setIsSyncing(true);
-          isSyncInProgressRef.current = true;
-          return false;
-        }
-      }
-    } catch (error) {
-      console.error("Error checking sync status before starting:", error);
-      // Allow sync to proceed if we can't check status (might be network issue)
-    }
-    
-    return true;
-  }, [isSyncing]);
-
-  // Helper function to start sync with protection
-  const startSync = useCallback(async (syncType: 'sync' | 'syncAll') => {
-    // Check if sync is already in progress
-    const canStart = await canStartSync();
-    if (!canStart) {
+  // Handler for starting sync using the store
+  const handleStartSync = useCallback(async (syncType: 'sync' | 'syncAll') => {
+    if (isSyncing) {
       toast.info("Sync läuft bereits...", {
         description: "Bitte warten Sie, bis die aktuelle Synchronisierung abgeschlossen ist.",
       });
       return;
     }
 
-    // Set local state immediately to prevent button spam
-    setIsSyncing(true);
-    isSyncInProgressRef.current = true;
-    syncStartTimeRef.current = Date.now(); // Track when we optimistically started
-    setRecentlyStartedSync(true); // Set state to trigger UI update
-    
-    // Clear the flag after grace period (10 seconds) as a safety measure
-    // This ensures it doesn't stay true forever if something goes wrong
-    setTimeout(() => {
-      // Only clear if backend hasn't confirmed sync is running
-      if (!syncStatus?.is_running && !isSyncing) {
-        setRecentlyStartedSync(false);
-      }
-    }, 10000);
-    
-    // Immediately check status to show progress bar
-    try {
-      const statusResponse = await brain.get_sync_status();
-      if (statusResponse.ok && statusResponse.data) {
-        setSyncStatus(statusResponse.data);
-        // If backend already confirms it's running, clear the optimistic start time
-        if (statusResponse.data.is_running) {
-          syncStartTimeRef.current = null;
-        }
-      }
-    } catch (error) {
-      console.error("Error fetching initial sync status:", error);
-    }
-
-    try {
-      const response = syncType === 'syncAll' 
-        ? await brain.trigger_sync_all()
-        : await brain.trigger_sync();
-      
-      if (response.ok) {
-        toast.success(syncType === 'syncAll' ? "Sync All gestartet" : "Sync gestartet", {
-          description: syncType === 'syncAll' 
-            ? "Alle Fälle werden synchronisiert. Die API-Timestamp wird nur bei Änderungen aktualisiert."
-            : "Die Synchronisierung läuft im Hintergrund. Die Daten werden automatisch aktualisiert.",
-        });
-        
-        // Immediately fetch status again to show progress
-        setTimeout(async () => {
-          try {
-            const statusResponse = await brain.get_sync_status();
-            if (statusResponse.ok && statusResponse.data) {
-              setSyncStatus(statusResponse.data);
-              setIsSyncing(statusResponse.data.is_running);
-              isSyncInProgressRef.current = statusResponse.data.is_running;
-              // If backend confirms it's running, clear the optimistic start time
-              if (statusResponse.data.is_running) {
-                syncStartTimeRef.current = null;
-                setRecentlyStartedSync(false); // Clear the flag since backend confirmed
-              }
-            }
-          } catch (error) {
-            console.error("Error fetching sync status after start:", error);
-          }
-        }, 500);
-      } else {
-        toast.error(syncType === 'syncAll' ? "Sync All fehlgeschlagen" : "Sync fehlgeschlagen", {
-          description: "Die Synchronisierung konnte nicht gestartet werden.",
-        });
-        setIsSyncing(false);
-        isSyncInProgressRef.current = false;
-        syncStartTimeRef.current = null;
-        setRecentlyStartedSync(false);
-      }
-    } catch (error) {
-      toast.error("Fehler beim Starten des Syncs", {
-        description: error instanceof Error ? error.message : "Unbekannter Fehler",
+    const success = await startSync(syncType);
+    if (success) {
+      toast.success(syncType === 'syncAll' ? "Sync All gestartet" : "Sync gestartet", {
+        description: syncType === 'syncAll'
+          ? "Alle Fälle werden synchronisiert."
+          : "Die Synchronisierung läuft im Hintergrund.",
       });
-      setIsSyncing(false);
-      isSyncInProgressRef.current = false;
-      syncStartTimeRef.current = null;
-      setRecentlyStartedSync(false);
+    } else {
+      toast.error("Sync fehlgeschlagen", {
+        description: "Die Synchronisierung konnte nicht gestartet werden.",
+      });
     }
-  }, [canStartSync]);
+  }, [isSyncing, startSync]);
 
   // Toggle theme
   const toggleTheme = useCallback(() => {
@@ -615,9 +382,8 @@ export default function DashboardPage() {
                 </Button>
               )}
               <Button
-                onClick={async () => {
-                  // Check sync status first, then refresh cases
-                  await checkSyncStatusAndStartPolling();
+                onClick={() => {
+                  refreshSyncStatus();
                   fetchCases(selectedInsurance, currentPage);
                 }}
                 disabled={loading}
@@ -627,9 +393,9 @@ export default function DashboardPage() {
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               </Button>
-              
+
               <Button
-                onClick={() => startSync('sync')}
+                onClick={() => handleStartSync('sync')}
                 variant="ghost"
                 size="sm"
                 disabled={isSyncing}
@@ -638,9 +404,9 @@ export default function DashboardPage() {
                 <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                 <span className="ml-2">{isSyncing ? "Sync läuft..." : "Sync"}</span>
               </Button>
-              
+
               <Button
-                onClick={() => startSync('syncAll')}
+                onClick={() => handleStartSync('syncAll')}
                 variant="ghost"
                 size="sm"
                 disabled={isSyncing}
@@ -699,20 +465,20 @@ export default function DashboardPage() {
           {mobileMenuOpen && (
             <div className="lg:hidden mt-4 p-4 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700">
               <div className="flex flex-col space-y-2">
-                <Button onClick={async () => {
-                  await checkSyncStatusAndStartPolling();
+                <Button onClick={() => {
+                  refreshSyncStatus();
                   fetchCases(selectedInsurance, currentPage);
                 }} disabled={loading} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
                   <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                   Aktualisieren
                 </Button>
 
-                <Button onClick={() => startSync('sync')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
+                <Button onClick={() => handleStartSync('sync')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
                   <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                   {isSyncing ? "Sync läuft..." : "Sync"}
                 </Button>
 
-                <Button onClick={() => startSync('syncAll')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
+                <Button onClick={() => handleStartSync('syncAll')} disabled={isSyncing} variant="ghost" className="justify-start text-gray-700 dark:text-gray-200">
                   <RefreshCw className={`mr-2 h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
                   {isSyncing ? "Sync läuft..." : "Sync All"}
                 </Button>
@@ -742,12 +508,7 @@ export default function DashboardPage() {
       {/* Main Content */}
       <div className="container mx-auto px-4 py-8">
         {/* Sync Status Indicator */}
-        {/* Show progress bar if sync is running OR if we have sync status indicating it's running */}
-        {/* Also show if we recently started a sync (grace period) */}
-        {((syncStatus?.is_running === true) || 
-          (isSyncing === true) || 
-          (isSyncInProgressRef.current) ||
-          (recentlyStartedSync === true)) && (
+        {isSyncing && (
           <Card className="mb-6 shadow-lg border-2 border-blue-200 dark:border-blue-700 bg-blue-50/80 dark:bg-blue-900/20 backdrop-blur-sm">
             <div className="p-4">
               <div className="flex items-center justify-between mb-3">
@@ -930,15 +691,15 @@ export default function DashboardPage() {
                         Die API hat Daten in einem unerwarteten Format zurückgegeben. Bitte versuchen Sie es erneut oder starten Sie eine Synchronisierung.
                       </p>
                       <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <Button onClick={async () => {
-                          await checkSyncStatusAndStartPolling();
+                        <Button onClick={() => {
+                          refreshSyncStatus();
                           fetchCases(selectedInsurance, currentPage);
                         }} disabled={loading}>
                           <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                           Erneut laden
                         </Button>
                         <Button
-                          onClick={() => startSync('sync')}
+                          onClick={() => handleStartSync('sync')}
                           variant="outline"
                           disabled={isSyncing}
                           className="border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400"

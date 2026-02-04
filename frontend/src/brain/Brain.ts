@@ -19,6 +19,9 @@ import {
   ListFirebaseUsersData,
   ListFirebaseUsersError,
   ListFirebaseUsersParams,
+  ManualSyncData,
+  ManualSyncError,
+  ManualSyncRequest,
   MinimalAuthTestEndpointData,
   MinimalAuthTestEndpointError,
   MinimalAuthTestEndpointParams,
@@ -251,6 +254,23 @@ export class Brain<SecurityDataType = unknown> extends HttpClient<SecurityDataTy
     this.request<TestSingleSyncData, TestSingleSyncError>({
       path: `/routes/test-single-sync/${caseId}`,
       method: "POST",
+      ...params,
+    });
+
+  /**
+   * @description Manually sync specific cases by their identifiers (case ID or case number).
+   *
+   * @tags dbtn/module:simple_sync
+   * @name manual_sync
+   * @summary Manual Sync
+   * @request POST:/routes/manual-sync
+   */
+  manual_sync = (data: ManualSyncRequest, params: RequestParams = {}) =>
+    this.request<ManualSyncData, ManualSyncError>({
+      path: `/routes/manual-sync`,
+      method: "POST",
+      body: data,
+      type: ContentType.Json,
       ...params,
     });
 }
