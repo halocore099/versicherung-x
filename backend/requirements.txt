@@ -2,6 +2,7 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 python-multipart==0.0.9
+setuptools  # Required for distutils compatibility in Python 3.12+
 
 # Database
 mysql-connector-python
