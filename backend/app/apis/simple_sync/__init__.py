@@ -28,6 +28,7 @@ def _create_sync_session(sync_type: str, user_id: str = None) -> Optional[str]:
     Creates a new sync session record in the database.
     Returns the session_id or None if creation failed.
     """
+    _lazy_init()  # Ensure table exists
     session_id = str(uuid.uuid4())
     try:
         with get_db_connection() as cnx:
@@ -142,12 +143,20 @@ def _ensure_sync_sessions_table():
         print(f"[Sync Session] Failed to ensure table: {e}")
 
 
-# Initialize table and recover on module load
-try:
-    _ensure_sync_sessions_table()
-    _recover_interrupted_sessions()
-except Exception as e:
-    print(f"[Sync Session] Startup initialization failed: {e}")
+# Defer initialization to avoid blocking app startup
+_initialization_done = False
+
+def _lazy_init():
+    """Initialize sync session table lazily on first use."""
+    global _initialization_done
+    if _initialization_done:
+        return
+    _initialization_done = True
+    try:
+        _ensure_sync_sessions_table()
+        _recover_interrupted_sessions()
+    except Exception as e:
+        print(f"[Sync Session] Initialization failed (will retry on next use): {e}")
 
 
 # =====================================================
