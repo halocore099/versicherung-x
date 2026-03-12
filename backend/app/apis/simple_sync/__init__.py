@@ -181,7 +181,7 @@ class ManualSyncResponse(BaseModel):
 # Get credentials from environment variables
 REPAIRLINE_API_USERNAME = os.getenv("REPAIRLINE_API_USERNAME")
 REPAIRLINE_API_PASSWORD = os.getenv("REPAIRLINE_API_PASSWORD")
-REPAIRLINE_API_BASE_URL = os.getenv("REPAIRLINE_API_BASE_URL", "https://sunriseapi.repairline.de/")
+REPAIRLINE_API_BASE_URL = os.getenv("REPAIRLINE_API_BASE_URL", "https://api.repairline.de/")
 
 # Configuration
 MAX_WORKERS = 10  # Number of parallel requests

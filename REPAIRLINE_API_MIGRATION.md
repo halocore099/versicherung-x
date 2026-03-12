@@ -9,7 +9,7 @@ Migration from the old v2 API to the new v1 API.
 | | URL |
 |---|---|
 | **Old** | `http://api.system.repairline.de/v2/` |
-| **New (prod)** | `https://sunriseapi.repairline.de/` |
+| **New (prod)** | `https://api.repairline.de/` |
 | **New (test)** | `https://sunriseapitest.repairline.de/` |
 
 Authentication is unchanged: **HTTP Basic Auth** with your API username and password.
@@ -210,11 +210,11 @@ For each project integrating with the Repairline API:
 
 ```
 # List open cases
-GET https://sunriseapi.repairline.de/CaseExport/GetCaseNumbersWithStatusOfOpenCases
+GET https://api.repairline.de/CaseExport/GetCaseNumbersWithStatusOfOpenCases
 Authorization: Basic base64(username:password)
 
 # Get case detail
-GET https://sunriseapi.repairline.de/Cases/{caseNumber}
+GET https://api.repairline.de/Cases/{caseNumber}
 Authorization: Basic base64(username:password)
 ```
 
