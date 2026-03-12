@@ -15,7 +15,7 @@ from app.auth import AuthorizedUser # Assuming endpoint might be protected
 router = APIRouter(tags=["Repair Case Exports"])
 limiter = Limiter(key_func=get_remote_address)
 
-REPAIRLINE_API_BASE_URL = "http://api.system.repairline.de/"
+REPAIRLINE_API_BASE_URL = os.getenv("REPAIRLINE_API_BASE_URL", "https://api.system.repairline.de/")
 
 # --- Pydantic Models ---
 class ExportOldCasesRequest(BaseModel):

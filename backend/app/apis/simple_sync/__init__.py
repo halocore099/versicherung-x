@@ -181,7 +181,7 @@ class ManualSyncResponse(BaseModel):
 # Get credentials from environment variables
 REPAIRLINE_API_USERNAME = os.getenv("REPAIRLINE_API_USERNAME")
 REPAIRLINE_API_PASSWORD = os.getenv("REPAIRLINE_API_PASSWORD")
-REPAIRLINE_API_BASE_URL = "http://api.system.repairline.de/v2/"
+REPAIRLINE_API_BASE_URL = os.getenv("REPAIRLINE_API_BASE_URL", "https://api.system.repairline.de/")
 
 # Configuration
 MAX_WORKERS = 10  # Number of parallel requests
@@ -190,17 +190,17 @@ MAX_RETRIES = 3  # Number of retries for failed requests
 RETRY_DELAY = 1  # Seconds to wait between retries
 
 
-def _fetch_case_with_retry(case_id: int, max_retries: int = MAX_RETRIES) -> Optional[dict]:
+def _fetch_case_with_retry(case_number: str, max_retries: int = MAX_RETRIES) -> Optional[dict]:
     """
     Fetches case data from API with retry logic.
     Returns the case data dict or None if all retries failed.
     """
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
+
     for attempt in range(max_retries):
         try:
             detail_response = requests.get(
-                f"{REPAIRLINE_API_BASE_URL}cases/{case_id}",
+                f"{REPAIRLINE_API_BASE_URL}Cases/{case_number}",
                 auth=(REPAIRLINE_API_USERNAME, REPAIRLINE_API_PASSWORD),
                 headers=headers,
                 timeout=REQUEST_TIMEOUT,
@@ -209,19 +209,19 @@ def _fetch_case_with_retry(case_id: int, max_retries: int = MAX_RETRIES) -> Opti
             return detail_response.json()
         except requests.exceptions.Timeout:
             if attempt < max_retries - 1:
-                print(f"[{case_id}] Request timeout (attempt {attempt + 1}/{max_retries}), retrying...")
+                print(f"[{case_number}] Request timeout (attempt {attempt + 1}/{max_retries}), retrying...")
                 time.sleep(RETRY_DELAY * (attempt + 1))  # Exponential backoff
             else:
-                print(f"[{case_id}] Request timeout after {max_retries} attempts.")
+                print(f"[{case_number}] Request timeout after {max_retries} attempts.")
                 return None
         except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
-                print(f"[{case_id}] Request error (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
+                print(f"[{case_number}] Request error (attempt {attempt + 1}/{max_retries}): {e}, retrying...")
                 time.sleep(RETRY_DELAY * (attempt + 1))
             else:
-                print(f"[{case_id}] Request failed after {max_retries} attempts: {e}")
+                print(f"[{case_number}] Request failed after {max_retries} attempts: {e}")
                 return None
-    
+
     return None
 
 
@@ -255,13 +255,14 @@ def _mark_case_inactive(case_id: int, start_time_utc: datetime, reason: str = "n
             cnx.close()
 
 
-def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_if_not_insurance: bool = False):
+def _process_single_case(case_id: int, case_number: str, start_time_utc: datetime, mark_inactive_if_not_insurance: bool = False):
     """
     Fetches, parses, and saves a single insurance case.
     Creates its own database connection for thread safety.
 
     Args:
-        case_id: The case ID to process
+        case_id: The case ID (used for DB operations)
+        case_number: The case number string (used for API fetch)
         start_time_utc: Timestamp for the sync
         mark_inactive_if_not_insurance: If True, marks the case as inactive if it's not an insurance case.
                                         Used by Sync All to handle cases that lost their insurance status.
@@ -269,12 +270,12 @@ def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_i
     # Create a new database connection for this thread
     cnx = get_mysql_connection()
     if not cnx:
-        print(f"[{case_id}] Failed to get database connection.")
+        print(f"[{case_number}] Failed to get database connection.")
         return "error_db_connection"
 
     try:
         # 1. Fetch detailed data with retry logic
-        case_data = _fetch_case_with_retry(case_id)
+        case_data = _fetch_case_with_retry(case_number)
         if not case_data:
             # If we can't fetch and we're in Sync All mode, mark as inactive
             if mark_inactive_if_not_insurance:
@@ -282,28 +283,28 @@ def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_i
                 return _mark_case_inactive(case_id, start_time_utc, "api_fetch_failed")
             return "error_fetch_failed"
 
-        print(f"[{case_id}] Fetched raw API data.")
+        print(f"[{case_number}] Fetched raw API data.")
 
         # 2. Check if it's an insurance case
         insurance_data = case_data.get('Insurance') # Can be None
         if not (insurance_data and insurance_data.get('InsuranceIsActivated')):
-            print(f"[{case_id}] Is not an insurance case or Insurance object is null/inactive.")
+            print(f"[{case_number}] Is not an insurance case or Insurance object is null/inactive.")
             # If in Sync All mode, mark as inactive since insurance is no longer active
             if mark_inactive_if_not_insurance:
                 cnx.close()  # Close this connection before calling mark function
                 return _mark_case_inactive(case_id, start_time_utc, "insurance_deactivated")
             return "skipped_not_insurance"
 
-        print(f"[{case_id}] Is an insurance case. Proceeding.")
+        print(f"[{case_number}] Is an insurance case. Proceeding.")
 
         # 3. Compare with existing data to see if an update is needed
         cursor = cnx.cursor(dictionary=True)
-        cursor.execute("SELECT `rawApiDetail` FROM `repair_cases` WHERE `caseId` = %s", (case_id,))
+        cursor.execute("SELECT `rawApiDetail` FROM `repair_cases` WHERE `caseId` = %s", (case_id,))  # noqa: keep case_id for DB lookup
         existing_record = cursor.fetchone()
         cursor.close()
 
         new_raw_detail_json = json.dumps(case_data, sort_keys=True)
-        
+
         # Track if this is a new case or if data has changed
         is_new_case = existing_record is None
         data_changed = False
@@ -313,30 +314,28 @@ def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_i
                 existing_raw_detail = existing_record.get('rawApiDetail', '{}')
                 if isinstance(existing_raw_detail, bytes):
                     existing_raw_detail = existing_raw_detail.decode('utf-8')
-                
+
                 normalized_existing = json.dumps(json.loads(existing_raw_detail), sort_keys=True)
-                
+
                 if normalized_existing == new_raw_detail_json:
-                    print(f"[{case_id}] Data is identical to DB record. Skipping update.")
+                    print(f"[{case_number}] Data is identical to DB record. Skipping update.")
                     return "skipped_no_change"
                 else:
                     data_changed = True
-                    print(f"[{case_id}] Data has changed. Proceeding with update.")
+                    print(f"[{case_number}] Data has changed. Proceeding with update.")
             except (json.JSONDecodeError, TypeError) as json_err:
-                print(f"[{case_id}] Warning: Could not compare JSON. Proceeding with update. Error: {json_err}")
+                print(f"[{case_number}] Warning: Could not compare JSON. Proceeding with update. Error: {json_err}")
                 data_changed = True
         else:
-            print(f"[{case_id}] New case. Proceeding with insert.")
+            print(f"[{case_number}] New case. Proceeding with insert.")
             data_changed = True
         
         # 4. Robust Data Mapping
-        print(f"[{case_id}] Mapping fields for upsert.")
-        
-        # Safer access to bookings
+        print(f"[{case_number}] Mapping fields for upsert.")
+
+        # Safer access to bookings — new API has no top-level Status field
         bookings = case_data.get('Bookings') or []
-        latest_status = bookings[-1].get('Status') if bookings and len(bookings) > 0 else None
-        if not latest_status:
-            latest_status = case_data.get('Status')  # Fallback to top-level status
+        latest_status = bookings[-1].get('Status') if bookings else None
 
         # Safer access to nested objects, providing default empty dicts
         customer_data = case_data.get('Customer') or {}
@@ -426,14 +425,14 @@ def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_i
         filtered_db_data = {k: v for k, v in db_data.items() if k in existing_columns}
         
         if not filtered_db_data:
-            print(f"[{case_id}] Warning: No valid columns found for database insert.")
+            print(f"[{case_number}] Warning: No valid columns found for database insert.")
             return "error_no_columns"
-        
+
         # Log any fields that were filtered out (for debugging)
         missing_columns = set(db_data.keys()) - existing_columns
         if missing_columns:
-            print(f"[{case_id}] Note: {len(missing_columns)} fields not in database schema (will be skipped): {', '.join(sorted(missing_columns))}")
-    
+            print(f"[{case_number}] Note: {len(missing_columns)} fields not in database schema (will be skipped): {', '.join(sorted(missing_columns))}")
+
         # 6. Upsert to Database - include ALL fields in update clause, even NULL ones
         # This ensures that fields that were previously NULL get updated properly
         columns = ", ".join(f"`{k}`" for k in filtered_db_data.keys())
@@ -441,16 +440,16 @@ def _process_single_case(case_id: int, start_time_utc: datetime, mark_inactive_i
         # Update ALL fields, including NULL values
         update_clause = ", ".join([f"`{key}` = VALUES(`{key}`)" for key in filtered_db_data.keys()])
         sql = f"INSERT INTO repair_cases ({columns}) VALUES ({placeholders}) ON DUPLICATE KEY UPDATE {update_clause}"
-        
-        print(f"[{case_id}] Executing SQL upsert with {len(filtered_db_data)} fields.")
+
+        print(f"[{case_number}] Executing SQL upsert with {len(filtered_db_data)} fields.")
         cursor = cnx.cursor()
         cursor.execute(sql, list(filtered_db_data.values()))
         cursor.close()
         cnx.commit()
-        
+
         return "upserted"
     except Exception as e:
-        print(f"[{case_id}] Error in _process_single_case: {e}")
+        print(f"[{case_number}] Error in _process_single_case: {e}")
         if cnx:
             cnx.rollback()
         return "error_processing"
@@ -467,62 +466,62 @@ def sync_insurance_cases_task():
     start_time_utc = datetime.now(timezone.utc)
 
     try:
-        # Step 1: Fetch all cases from the Repairline API
-        print("Fetching all cases from Repairline API...")
+        # Step 1: Fetch all open cases from the Repairline API
+        print("Fetching open cases from Repairline API...")
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(
-            f"{REPAIRLINE_API_BASE_URL}cases",
+            f"{REPAIRLINE_API_BASE_URL}CaseExport/GetCaseNumbersWithStatusOfOpenCases",
             auth=(REPAIRLINE_API_USERNAME, REPAIRLINE_API_PASSWORD),
             headers=headers,
             timeout=300,  # Generous timeout for a potentially large response
         )
         response.raise_for_status()
         all_cases = response.json()
-        print(f"Fetched {len(all_cases)} total cases from the API.")
+        print(f"Fetched {len(all_cases)} open cases from the API.")
 
-        # The initial list from the API doesn't contain the detailed insurance flag.
-        # We must fetch details for each case to check if it's an insurance case.
-        case_ids_to_process = [case['CaseId'] for case in all_cases]
-        print(f"Found {len(case_ids_to_process)} total cases to check for details.")
+        # The list gives us CaseId + CaseNumber. We need both:
+        # CaseNumber for the API fetch endpoint, CaseId as the DB primary key.
+        cases_to_process = [(case['CaseId'], case['CaseNumber']) for case in all_cases]
+        print(f"Found {len(cases_to_process)} total cases to check for details.")
 
-        if not case_ids_to_process:
+        if not cases_to_process:
             print("No cases found in API response. Task finished.")
             return
 
         # Step 4: Fetch details and save each insurance case using parallel processing
         global _sync_stats
         with _sync_lock:
-            _sync_stats["total_cases"] = len(case_ids_to_process)
-        
+            _sync_stats["total_cases"] = len(cases_to_process)
+
         upsert_count = 0
         skipped_no_change_count = 0
         skipped_not_insurance_count = 0
         error_count = 0
-        
+
         print(f"Starting parallel processing with {MAX_WORKERS} workers...")
         start_time = time.time()
-        
+
         # Use ThreadPoolExecutor for parallel processing
         # Note: Each thread creates its own DB connection for thread safety
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             # Submit all tasks
-            future_to_case_id = {
-                executor.submit(_process_single_case, case_id, start_time_utc): case_id
-                for case_id in case_ids_to_process
+            future_to_case = {
+                executor.submit(_process_single_case, case_id, case_number, start_time_utc): (case_id, case_number)
+                for case_id, case_number in cases_to_process
             }
-            
+
             # Process completed tasks
             completed = 0
-            for future in as_completed(future_to_case_id):
-                case_id = future_to_case_id[future]
+            for future in as_completed(future_to_case):
+                case_id, case_number = future_to_case[future]
                 completed += 1
-                
-                if completed % 50 == 0 or completed == len(case_ids_to_process):
+
+                if completed % 50 == 0 or completed == len(cases_to_process):
                     elapsed = time.time() - start_time
                     rate = completed / elapsed if elapsed > 0 else 0
-                    remaining = len(case_ids_to_process) - completed
+                    remaining = len(cases_to_process) - completed
                     eta = remaining / rate if rate > 0 else 0
-                    print(f"Progress: {completed}/{len(case_ids_to_process)} cases processed "
+                    print(f"Progress: {completed}/{len(cases_to_process)} cases processed "
                           f"({rate:.1f} cases/sec, ETA: {eta:.0f}s)")
                     # Update stats
                     with _sync_lock:
@@ -539,7 +538,7 @@ def sync_insurance_cases_task():
                     elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
                         error_count += 1
                 except Exception as detail_err:
-                    print(f"Error processing case {case_id}: {detail_err}")
+                    print(f"Error processing case {case_number}: {detail_err}")
                     error_count += 1
                     
                 # Update stats periodically
@@ -561,14 +560,14 @@ def sync_insurance_cases_task():
                         )
 
         elapsed_total = time.time() - start_time
-        
+
         # Final stats update
         with _sync_lock:
             _sync_stats["upserted"] = upsert_count
             _sync_stats["skipped_no_change"] = skipped_no_change_count
             _sync_stats["skipped_not_insurance"] = skipped_not_insurance_count
             _sync_stats["errors"] = error_count
-            _sync_stats["processed"] = len(case_ids_to_process)
+            _sync_stats["processed"] = len(cases_to_process)
         
         print(f"Sync finished in {elapsed_total:.1f}s. "
               f"Upserted: {upsert_count}, "
@@ -610,44 +609,45 @@ def sync_all_cases_task():
             return
 
         cursor = cnx.cursor()
-        cursor.execute("SELECT caseId FROM repair_cases WHERE insuranceIsActive = 1")
-        db_case_ids = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT caseId, caseNumber FROM repair_cases WHERE insuranceIsActive = 1")
+        db_cases = [(row[0], row[1]) for row in cursor.fetchall()]
+        db_case_ids = [c[0] for c in db_cases]
         cursor.close()
         cnx.close()
 
-        print(f"Found {len(db_case_ids)} active insurance cases in database.")
+        print(f"Found {len(db_cases)} active insurance cases in database.")
 
         global _sync_stats
         with _sync_lock:
-            _sync_stats["total_cases"] = len(db_case_ids)
+            _sync_stats["total_cases"] = len(db_cases)
 
         upsert_count = 0
         skipped_no_change_count = 0
         marked_inactive_count = 0
         error_count = 0
 
-        if db_case_ids:
+        if db_cases:
             print(f"Starting parallel processing of existing DB cases with {MAX_WORKERS} workers...")
             start_time = time.time()
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 # Process with mark_inactive_if_not_insurance=True
-                future_to_case_id = {
-                    executor.submit(_process_single_case, case_id, start_time_utc, True): case_id
-                    for case_id in db_case_ids
+                future_to_case = {
+                    executor.submit(_process_single_case, case_id, case_number, start_time_utc, True): (case_id, case_number)
+                    for case_id, case_number in db_cases
                 }
 
                 completed = 0
-                for future in as_completed(future_to_case_id):
-                    case_id = future_to_case_id[future]
+                for future in as_completed(future_to_case):
+                    case_id, case_number = future_to_case[future]
                     completed += 1
 
-                    if completed % 50 == 0 or completed == len(db_case_ids):
+                    if completed % 50 == 0 or completed == len(db_cases):
                         elapsed = time.time() - start_time
                         rate = completed / elapsed if elapsed > 0 else 0
-                        remaining = len(db_case_ids) - completed
+                        remaining = len(db_cases) - completed
                         eta = remaining / rate if rate > 0 else 0
-                        print(f"Phase 1 Progress: {completed}/{len(db_case_ids)} cases "
+                        print(f"Phase 1 Progress: {completed}/{len(db_cases)} cases "
                               f"({rate:.1f}/sec, ETA: {eta:.0f}s)")
                         with _sync_lock:
                             _sync_stats["processed"] = completed
@@ -663,7 +663,7 @@ def sync_all_cases_task():
                         elif result in ["error_fetch_failed", "error_db_connection", "error_processing", "error_marking_inactive"]:
                             error_count += 1
                     except Exception as detail_err:
-                        print(f"Error processing case {case_id}: {detail_err}")
+                        print(f"Error processing case {case_number}: {detail_err}")
                         error_count += 1
 
                     if completed % 50 == 0:
@@ -693,15 +693,17 @@ def sync_all_cases_task():
 
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(
-            f"{REPAIRLINE_API_BASE_URL}cases",
+            f"{REPAIRLINE_API_BASE_URL}CaseExport/GetCaseNumbersWithStatusOfOpenCases",
             auth=(REPAIRLINE_API_USERNAME, REPAIRLINE_API_PASSWORD),
             headers=headers,
             timeout=300,
         )
         response.raise_for_status()
         api_cases = response.json()
-        api_case_ids = {case['CaseId'] for case in api_cases}
-        print(f"Fetched {len(api_case_ids)} cases from API.")
+        # Build a map of CaseId → CaseNumber for API cases
+        api_case_map = {case['CaseId']: case['CaseNumber'] for case in api_cases}
+        api_case_ids = set(api_case_map.keys())
+        print(f"Fetched {len(api_case_ids)} open cases from API.")
 
         # Get current DB case IDs (including newly inactive ones)
         cnx = get_mysql_connection()
@@ -716,32 +718,33 @@ def sync_all_cases_task():
 
             # Find cases in API that are NOT in DB yet
             new_case_ids = api_case_ids - existing_db_ids
-            print(f"Found {len(new_case_ids)} new cases in API not yet in DB.")
+            new_cases = [(cid, api_case_map[cid]) for cid in new_case_ids]
+            print(f"Found {len(new_cases)} new cases in API not yet in DB.")
 
-            if new_case_ids:
+            if new_cases:
                 # Update total count for progress tracking
                 with _sync_lock:
-                    _sync_stats["total_cases"] = len(db_case_ids) + len(new_case_ids)
+                    _sync_stats["total_cases"] = len(db_case_ids) + len(new_cases)
 
-                print(f"Processing {len(new_case_ids)} new cases...")
+                print(f"Processing {len(new_cases)} new cases...")
                 start_time = time.time()
 
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                     # Process new cases (don't mark inactive, they're new)
-                    future_to_case_id = {
-                        executor.submit(_process_single_case, case_id, start_time_utc, False): case_id
-                        for case_id in new_case_ids
+                    future_to_case = {
+                        executor.submit(_process_single_case, case_id, case_number, start_time_utc, False): (case_id, case_number)
+                        for case_id, case_number in new_cases
                     }
 
                     completed_phase2 = 0
-                    for future in as_completed(future_to_case_id):
-                        case_id = future_to_case_id[future]
+                    for future in as_completed(future_to_case):
+                        case_id, case_number = future_to_case[future]
                         completed_phase2 += 1
 
-                        if completed_phase2 % 50 == 0 or completed_phase2 == len(new_case_ids):
+                        if completed_phase2 % 50 == 0 or completed_phase2 == len(new_cases):
                             elapsed = time.time() - start_time
                             rate = completed_phase2 / elapsed if elapsed > 0 else 0
-                            print(f"Phase 2 Progress: {completed_phase2}/{len(new_case_ids)} new cases "
+                            print(f"Phase 2 Progress: {completed_phase2}/{len(new_cases)} new cases "
                                   f"({rate:.1f}/sec)")
                             with _sync_lock:
                                 _sync_stats["processed"] = len(db_case_ids) + completed_phase2
@@ -757,7 +760,7 @@ def sync_all_cases_task():
                             elif result in ["error_fetch_failed", "error_db_connection", "error_processing"]:
                                 error_count += 1
                         except Exception as detail_err:
-                            print(f"Error processing new case {case_id}: {detail_err}")
+                            print(f"Error processing new case {case_number}: {detail_err}")
                             error_count += 1
 
         # Final stats update
@@ -766,7 +769,7 @@ def sync_all_cases_task():
             _sync_stats["skipped_no_change"] = skipped_no_change_count
             _sync_stats["marked_inactive"] = marked_inactive_count
             _sync_stats["errors"] = error_count
-            _sync_stats["processed"] = len(db_case_ids) + len(new_case_ids) if 'new_case_ids' in locals() else len(db_case_ids)
+            _sync_stats["processed"] = len(db_case_ids) + len(new_cases) if 'new_cases' in locals() else len(db_case_ids)
 
         print(f"SYNC ALL finished. "
               f"Updated: {upsert_count}, "
@@ -1030,17 +1033,38 @@ async def trigger_sync_all(request: Request, background_tasks: BackgroundTasks):
     return {"message": "Sync All started. Checking existing DB cases first, then looking for new cases."}
 
 
-@router.post("/test-single-sync/{case_id}")
-async def test_single_sync(case_id: int):
+@router.post("/test-single-sync/{case_number}")
+async def test_single_sync(case_number: str):
     """
-    Triggers a sync for a single case ID for debugging purposes.
+    Triggers a sync for a single case number for debugging purposes.
     """
-    print(f"Received request to test sync for single case ID: {case_id}")
+    print(f"Received request to test sync for case: {case_number}")
     try:
         start_time_utc = datetime.now(timezone.utc)
-        result = _process_single_case(case_id, start_time_utc)
+        # Look up caseId from DB (needed for DB operations in _process_single_case)
+        case_id = None
+        with get_db_connection() as cnx:
+            cursor = cnx.cursor(dictionary=True)
+            cursor.execute("SELECT caseId FROM repair_cases WHERE caseNumber = %s", (case_number,))
+            row = cursor.fetchone()
+            cursor.close()
+            if row:
+                case_id = row['caseId']
 
-        return {"message": f"Sync test for case {case_id} completed.", "result": result}
+        if case_id is None:
+            # Case not in DB yet — fetch from API to get CaseId
+            case_data = _fetch_case_with_retry(case_number)
+            if case_data:
+                case_id = case_data.get('CaseId')
+
+        if case_id is None:
+            raise HTTPException(status_code=404, detail=f"Case {case_number} not found")
+
+        result = _process_single_case(case_id, case_number, start_time_utc)
+
+        return {"message": f"Sync test for case {case_number} completed.", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         import traceback
         print(f"An error occurred during the single case sync test: {e}")
@@ -1074,12 +1098,29 @@ async def manual_sync(request: Request, body: ManualSyncRequest):
             continue
 
         try:
-            # Try to parse as case ID first
+            # Resolve (case_id, case_number) pair from identifier
             case_id = None
+            case_number = None
+
             if identifier.isdigit():
+                # Identifier is a numeric case ID — look up case_number from DB
                 case_id = int(identifier)
+                try:
+                    with get_db_connection() as cnx:
+                        cursor = cnx.cursor(dictionary=True)
+                        cursor.execute(
+                            "SELECT caseNumber FROM repair_cases WHERE caseId = %s",
+                            (case_id,)
+                        )
+                        row = cursor.fetchone()
+                        cursor.close()
+                        if row:
+                            case_number = row['caseNumber']
+                except Exception as e:
+                    print(f"[Manual Sync] Error looking up case ID {identifier}: {e}")
             else:
-                # Look up by case number in database
+                # Identifier is a case number string — look up case_id from DB
+                case_number = identifier
                 try:
                     with get_db_connection() as cnx:
                         cursor = cnx.cursor(dictionary=True)
@@ -1094,13 +1135,24 @@ async def manual_sync(request: Request, body: ManualSyncRequest):
                 except Exception as e:
                     print(f"[Manual Sync] Error looking up case number {identifier}: {e}")
 
-            if case_id is None:
+            if case_number is None:
                 details.append(f"{identifier}: Not found in database")
                 failed += 1
                 continue
 
+            if case_id is None:
+                # New case not in DB yet — fetch from API to obtain CaseId
+                case_data = _fetch_case_with_retry(case_number)
+                if case_data:
+                    case_id = case_data.get('CaseId')
+
+            if case_id is None:
+                details.append(f"{identifier}: Could not resolve case ID")
+                failed += 1
+                continue
+
             # Process the case
-            result = _process_single_case(case_id, start_time_utc, mark_inactive_if_not_insurance=False)
+            result = _process_single_case(case_id, case_number, start_time_utc, mark_inactive_if_not_insurance=False)
 
             if result == "upserted":
                 details.append(f"{identifier}: Synced successfully")
