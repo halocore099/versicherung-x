@@ -84,7 +84,7 @@ async def get_cases(
         cursor = cnx.cursor(dictionary=True)
 
         # Build WHERE clause
-        core_filter_condition = "insuranceIsActive = 1 AND IFNULL(LOWER(insuranceName), '') != 'wertgarantie'"
+        core_filter_condition = "(insuranceIsActive = 1 OR (insuranceIsActive = 0 AND IFNULL(LOWER(insuranceName), '') != 'wertgarantie'))"
         where_clauses = [core_filter_condition]
         query_params = []
 
@@ -264,7 +264,7 @@ async def export_repair_cases_csv(insuranceName: str | None = Query(None)):
             FROM repair_cases 
         """
 
-        core_filter_condition = "insuranceIsActive = 1 AND IFNULL(LOWER(insuranceName), '') != 'wertgarantie'"
+        core_filter_condition = "(insuranceIsActive = 1 OR (insuranceIsActive = 0 AND IFNULL(LOWER(insuranceName), '') != 'wertgarantie'))"
 
         where_clauses = [core_filter_condition]
         query_params = []
