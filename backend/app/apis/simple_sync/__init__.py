@@ -279,7 +279,6 @@ def _process_single_case(case_id: int, case_number: str, start_time_utc: datetim
         if not case_data:
             # If we can't fetch and we're in Sync All mode, mark as inactive
             if mark_inactive_if_not_insurance:
-                cnx.close()  # Close this connection before calling mark function
                 return _mark_case_inactive(case_id, start_time_utc, "api_fetch_failed")
             return "error_fetch_failed"
 
@@ -291,7 +290,6 @@ def _process_single_case(case_id: int, case_number: str, start_time_utc: datetim
             print(f"[{case_number}] Is not an insurance case or Insurance object is null/inactive.")
             # If in Sync All mode, mark as inactive since insurance is no longer active
             if mark_inactive_if_not_insurance:
-                cnx.close()  # Close this connection before calling mark function
                 return _mark_case_inactive(case_id, start_time_utc, "insurance_deactivated")
             return "skipped_not_insurance"
 
@@ -450,12 +448,18 @@ def _process_single_case(case_id: int, case_number: str, start_time_utc: datetim
         return "upserted"
     except Exception as e:
         print(f"[{case_number}] Error in _process_single_case: {e}")
-        if cnx:
-            cnx.rollback()
+        try:
+            if cnx:
+                cnx.rollback()
+        except Exception:
+            pass
         return "error_processing"
     finally:
-        if cnx and cnx.is_connected():
-            cnx.close()
+        try:
+            if cnx and cnx.is_connected():
+                cnx.close()
+        except Exception:
+            pass
 
 
 def sync_insurance_cases_task():
