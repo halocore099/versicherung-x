@@ -99,7 +99,7 @@ async def get_cases(
             inactive_statuses = [
                 'abgeschlossen', 'geschlossen', 'storniert', 'abgelehnt',
                 'cancelled', 'closed', 'completed', 'rejected',
-                'unsachgemäßer abbruch', 'reparaturabbruch', 'gerät entsorgen'
+                'unsachgemäßer abbruch', 'reparaturabbruch', 'gerät entsorgen', 'gerät entsorgt'
             ]
             # Build NOT IN clause for statuses
             status_placeholders = ', '.join(['%s'] * len(inactive_statuses))
